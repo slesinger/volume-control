@@ -1,7 +1,8 @@
 esphome:
-  name: volume_control
-  platform: ESP8266
-  board: d1_mini
+  name: volume-control
+
+esp32:
+  board: lolin32
 
 wifi:
   ssid: !secret wifi_ssid
@@ -9,26 +10,65 @@ wifi:
 
 logger:
 
+psram:
+
 api:
+  password: !secret api_key
 
 ota:
+  platform: esphome
+  password: !secret ota_password
 
 spi:
-  clk_pin: 14
-  mosi_pin: 13
+  clk_pin: GPIO18
+  mosi_pin: GPIO23
+
+output:
+  - platform: ledc
+    pin: GPIO17
+    id: backlight_pwm
+
+light:
+  - platform: monochromatic
+    output: backlight_pwm
+    name: "Display Backlight"
+    id: back_light
+    restore_mode: ALWAYS_ON
 
 display:
-  - platform: st7789v
-    model: "ROUND_240X240"
-    cs_pin: 
-    dc_pin: 15
-    reset_pin: 12
-    backlight_pin: 2
-    rotation: 0
+  - platform: ili9xxx
+    model: ST7789V
+    dc_pin: GPIO16
+    reset_pin: GPIO4
+    cs_pin: GPIO5
+    data_rate: 2MHz
+    spi_mode: MODE3
+    invert_colors: false
+    show_test_card: true
+    pixel_mode: 16bit
+    dimensions:
+      height: 240
+      width: 240
     lambda: |-
-      it.print(120, 120, id(font1), TextAlign::CENTER, "Hello World");
-
+      it.draw_pixel_at(10, 10, Color(255, 255, 0));
 font:
   - file: "gfonts://Roboto"
     id: font1
-    size: 32
+    size: 24
+
+# rotary_encoder:
+#   - id: encoder1
+#     pin_a: GPIO32
+#     pin_b: GPIO33
+#     min_value: 0
+#     max_value: 100
+#     resolution: 1
+
+binary_sensor:
+  - platform: gpio
+    pin: GPIO25
+    name: "Encoder Button"
+    id: encoder_button
+    on_press:
+      then:
+        - logger.log: "Encoder button pressed"

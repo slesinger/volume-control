@@ -19,8 +19,8 @@ It uses Senheiser Sound Control Protocol (SSP) to control the volume of the spea
 
 ## Hardware
 
-- ESP 8266 Wemos D1 mini
-- Display GMT130 240x240px, Driver IC ST7789, SPI interface, it needs HW SPI controller, needs init with parameter SPI_MODE3 (it does not have CS pin)
+- ESP32 Wemos Lolin32
+- Display GMT130 240x240px, Driver IC ST7789, SPI interface, it needs HW SPI controller, needs init with parameter SPI_MODE2 (it does not have CS pin)
 - Rotary encoder with push button KY-040
 
 Suggest what esphome packages to use to control the aboe hardware. Suggest yaml configuration for the ESP8266 and provide custom componenets where packages are not available.
@@ -30,18 +30,18 @@ Suggest what esphome packages to use to control the aboe hardware. Suggest yaml 
 Display pins:
 - GND -> GND
 - VCC -> 3.3V
-- SCL -> GPIO 14 (D5)  CLOCK
-- SDA -> GPIO 13 (D7)  MOSI
-- RES -> GPIO 12 (D6)  RESET, need for initialization
-- DC  -> GPIO 15 (D8)  Display data/command selection
-- BLK -> GPIO  2 (D4)  backlight (PWM)
+- SCL -> GPIO18 (SCK)
+- SDA -> GPIO23 (MOSI)
+- RES -> GPIO4 (RESET)
+- DC  -> GPIO16 (DC)
+- BLK -> GPIO17 (backlight, PWM)
 
 Rotary encoder pins:
 - GND -> GND
 - VCC -> 3.3V
-- CLK -> GPIO 5 (D1)
-- DT -> GPIO 4 (D2)
-- SW -> GPIO 0 (D3)
+- CLK -> GPIO32
+- DT  -> GPIO33
+- SW  -> GPIO25
 
 ## Software
 
@@ -126,7 +126,8 @@ This section shows menu structure and how to navigate through it.
 7. Volume control settings
   7.1. Set volume step
   7.2. Set backlight
-  7.3. Display timeout
+  7.3. Display timeout to stop backlight
+  7.4. Set ESP deep sleep timeout (to save power)
 
 # Resources
 

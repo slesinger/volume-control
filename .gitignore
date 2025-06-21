@@ -72,3 +72,7 @@ pyssc/
 
 # Python virtual environments
 venv/
+secrets.yaml
+
+.esphome/idedata/volume-control.json
+.esphome/storage/volume-control.yaml.json
