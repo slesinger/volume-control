@@ -1,6 +1,6 @@
-#include "tft_hello_world.h"
 #include "esphome/core/log.h"
-#include <TFT_eSPI.h> // <-- The problematic include is now safely here.
+#include <TFT_eSPI.h>
+#include "tft_hello_world.h"
 
 namespace esphome {
 namespace tft_hello_world {
@@ -17,7 +17,7 @@ void TFTHelloWorld::setup() {
   this->tft_->setTextColor(TFT_WHITE, TFT_BLACK);
   this->tft_->setTextSize(3);
   this->tft_->setTextDatum(MC_DATUM);
-  this->tft_->drawString("Hello World!", this->tft_->width() / 2, this->tft_->height() / 2);
+  this->tft_->drawString("Hello Medliku", this->tft_->width() / 2, this->tft_->height() / 2);
 }
 
 void TFTHelloWorld::loop() {

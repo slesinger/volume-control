@@ -10,7 +10,9 @@ class TFT_eSPI;
 namespace esphome {
 namespace tft_hello_world {
 
-class TFTHelloWorld : public Component, public spi::SPIDevice {
+// Correctly use SPIDevice with template parameters for SPI configuration
+class TFTHelloWorld : public Component, public spi::SPIDevice<spi::BIT_ORDER_MSB_FIRST, spi::CLOCK_POLARITY_LOW, 
+                                                           spi::CLOCK_PHASE_LEADING, spi::DATA_RATE_40MHZ> {
  public:
   // --- Standard ESPHome methods ---
   void setup() override;
