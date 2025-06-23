@@ -1,0 +1,76 @@
+esphome:
+  name: volume-control
+  platformio_options:
+    build_flags:
+      - -DUSER_SETUP_LOADED=1
+      - -DST7789_DRIVER=1
+      - -DTFT_WIDTH=240
+      - -DTFT_HEIGHT=240
+      - -DTFT_MOSI=23
+      - -DTFT_SCLK=18
+      - -DTFT_CS=-1    # CS pin not used
+      - -DTFT_DC=16    # Data Command control pin
+      - -DTFT_RST=4    # Reset pin
+      - -DLOAD_GLCD=1
+      - -DSPI_FREQUENCY=40000000
+      - -DDISABLE_ALL_LIBRARY_WARNINGS=1  # Disable the touch CS warning
+      - -Isrc # Base source directory
+      - -Isrc/esphome/components/api
+      - -Isrc/esphome/components/binary_sensor
+      - -Isrc/esphome/components/logger
+      - -Isrc/esphome/components/ota
+      - -Isrc/esphome/components/psram
+      - -Isrc/esphome/components/wifi
+      - -Isrc/esphome/components/tft_hello_world # Your custom component
+      - -Isrc/esphome/components/spi              # The MOST IMPORTANT one
+
+esp32:
+  board: lolin32
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+
+logger:
+
+psram:
+
+api:
+  password: !secret api_key
+
+ota:
+  platform: esphome
+  password: !secret ota_password
+
+spi:
+  id: spi1
+  clk_pin: GPIO18
+  mosi_pin: GPIO23
+  
+external_components:
+  - source:
+      type: local
+      path: custom_components
+
+# Use our custom component
+tft_hello_world:
+  id: my_tft_hello_world
+  spi_id: spi1
+  # cs_pin: 13 # this is fake
+
+# rotary_encoder:
+#   - id: encoder1
+#     pin_a: GPIO32
+#     pin_b: GPIO33
+#     min_value: 0
+#     max_value: 100
+#     resolution: 1
+
+binary_sensor:
+  - platform: gpio
+    pin: GPIO25
+    name: "Encoder Button"
+    id: encoder_button
+    on_press:
+      then:
+        - logger.log: "Encoder button pressed"
