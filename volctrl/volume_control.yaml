@@ -66,11 +66,11 @@ tft_hello_world:
 #     max_value: 100
 #     resolution: 1
 
-binary_sensor:
-  - platform: gpio
-    pin: GPIO25
-    name: "Encoder Button"
-    id: encoder_button
-    on_press:
-      then:
-        - logger.log: "Encoder button pressed"
+# binary_sensor:
+#   - platform: gpio
+#     pin: GPIO25
+#     name: "Encoder Button"
+#     id: encoder_button
+#     on_press:
+#       then:
+#         - logger.log: "Encoder button pressed"
