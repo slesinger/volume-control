@@ -52,6 +52,30 @@ Refer to the ```Resources``` below for further documentation, however the khtool
 
 > Note: Commands send to the speakers are always sent to all speakers.
 
+### Initialization
+
+When the ESP8266 is powered on, it will render the default screen. It will connect to the WiFi network and then it will start connecting to the configured speakers on the network and fetch their settings. It will also fetch date and time from NTP server. The display will show status messages during this process. This is useful because it takes some time to connect to the speaker after power on, and it is not possible to control volume before connection is established.
+
+### Default Screen Layout
+
+Top line is a status line:
+ - it shows date and time aligned to the right in format HH:MM MMM DD (example 12:34 Dec 24) and auto standby time on the left. Text color will be white.
+ - wifi status as a signal icon on the left side of the datetime. Color of the icon will indicate connection state (green for connected, red for disconnected).
+  - speaker connection states as a 3D dot. Each speaker device is represented by one dot. They are aligned to the left. Color of the dot will indicate connection state (Green for connected, gray for disconnected.
+
+Bottom line:
+ - display status text during initialization, like "Connecting to WiFi", "Connecting to speakers", "Discovering speakers" etc. Text color will be white.
+ - during normal operation it will show "Press button to enter menu" text, which will be centered horizontally on the display. Text color will be white.
+
+Middle area:
+ - display current volume level in big numbers, aligned to the center of the display. Text color will be yellow.
+ - if speaker is muted, display a forbidden sign over the volume level.
+ - if speaker is in standby mode, display a "Zzz" icon over the volume level.
+
+### Menu Screen Layout
+When the menu is entered, the display will show a list of menu items. The menu items will be navigated using the rotary encoder. The push button will select the item. The top line will show two dots ".." to indicate return to parent menu.
+
+## Information gathering
 Most of information displayed will be fetched straight from the speakers over network, except of the date and time, which will be fetched from NTP server and except IPv6 addresses of the speakers and own settings, which will be stored in EEPROM of the ESP8266 like this:
 
 ```cpp
@@ -89,13 +113,6 @@ esphome dashboard .
 ## Normal operation (outside of menu)
 
 Rotary encoder will increase/decrease volume by 1 db step on each click. It will also toggle mute on push button click.
-
-Diplay will show:
- - current volume level (big numbers) - this value must be retrieved from the speaker over network
- - mute state by showing a forbidden sign over the volume level
- - date and time (from NTP server) on top left of the display
- - standby auto_standby_time "/" standby auto_standby_time on top right of the display
- - indication of speaker connection state (connected/disconnected) on the bottom of the display. Red or green dot for each speaker known. This is useful because it takes some time to connect to the speaker after power on, and it is not possible to control volume before connection is established.
 
 ## Menu operation
 
