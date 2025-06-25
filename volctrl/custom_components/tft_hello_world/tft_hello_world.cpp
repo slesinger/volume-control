@@ -115,10 +115,28 @@ std::string get_datetime_string() {
 
 void draw_wifi_icon(TFT_eSPI *tft, int x, int y, bool connected) {
   uint16_t color = connected ? TFT_GREEN : TFT_RED;
-  tft->fillCircle(x, y, 8, color);
-  tft->drawCircle(x, y, 8, TFT_WHITE);
-  tft->drawCircle(x, y, 5, TFT_WHITE);
-  tft->drawCircle(x, y, 2, TFT_WHITE);
+  
+  // Draw a dot at the bottom center
+  tft->fillCircle(x, y + 5, 2, color);
+  
+  // Draw three curves with increasing size to represent signal strength
+  if (connected) {
+    // Small arc
+    tft->drawCircle(x, y + 5, 5, color);
+    tft->fillRect(x - 5, y + 5, 10, 6, TFT_BLACK); // Erase bottom half
+    
+    // Medium arc 
+    tft->drawCircle(x, y + 5, 9, color);
+    tft->fillRect(x - 9, y + 5, 18, 10, TFT_BLACK); // Erase bottom half
+    
+    // Large arc
+    tft->drawCircle(x, y + 5, 13, color);
+    tft->fillRect(x - 13, y + 5, 28, 14, TFT_BLACK); // Erase bottom half
+  } else {
+    // Draw a cross for disconnected state
+    tft->drawLine(x - 6, y - 6, x + 6, y + 6, TFT_RED);
+    tft->drawLine(x + 6, y - 6, x - 6, y + 6, TFT_RED);
+  }
 }
 
 void draw_speaker_dots(TFT_eSPI *tft, int x, int y, const std::map<std::string, DeviceState> &states) {
@@ -165,11 +183,12 @@ void draw_top_line(TFT_eSPI *tft, bool wifi_connected, const std::map<std::strin
 
 void draw_bottom_line(TFT_eSPI *tft, const std::string &status, bool normal) {
   tft->setTextColor(TFT_WHITE, TFT_BLACK);
-  tft->setTextSize(2);
   int y = tft->height() - 24;
   if (normal) {
-    tft->drawString("Press button to enter menu", tft->width()/2, y);
+    tft->setTextSize(2);  // Keep size 2 but use a shorter message
+    tft->drawString("Press for menu", tft->width()/2, y);
   } else {
+    tft->setTextSize(2);  // Keep original size for status messages
     tft->drawString(status.c_str(), tft->width()/2, y);
   }
 }
