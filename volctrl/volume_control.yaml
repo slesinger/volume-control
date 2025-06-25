@@ -6,6 +6,7 @@ esphome:
       - -DST7789_DRIVER=1
       - -DTFT_WIDTH=240
       - -DTFT_HEIGHT=240
+      - -std=gnu++14
       - -DTFT_MOSI=23
       - -DTFT_SCLK=18
       - -DTFT_CS=-1    # CS pin not used
@@ -46,7 +47,10 @@ spi:
   id: spi1
   clk_pin: GPIO18
   mosi_pin: GPIO23
-  
+
+packages:
+  time: !include time.yaml
+
 external_components:
   - source:
       type: local

@@ -1,0 +1,5 @@
+# Time component based on SNTP that will synchronize with an NTP server
+time:
+  - platform: sntp
+    id: sntp_time
+    timezone: Europe/Prague  # Adjust to your time zone
