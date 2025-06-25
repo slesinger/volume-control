@@ -12,7 +12,10 @@ esphome:
       - -DTFT_CS=-1    # CS pin not used
       - -DTFT_DC=16    # Data Command control pin
       - -DTFT_RST=4    # Reset pin
-      - -DLOAD_GLCD=1
+      - -DLOAD_GLCD=1  # Load default font - keep for fallback
+      - -DLOAD_FONT2=1 # Load smooth Font2 - smaller font for header
+      - -DLOAD_FONT4=1 # Load smooth Font4 - main UI font
+      - -DLOAD_FONT8=1 # Load smooth Font8 - volume display
       - -DSPI_FREQUENCY=40000000
       - -DDISABLE_ALL_LIBRARY_WARNINGS=1  # Disable the touch CS warning
       - -Isrc # Base source directory

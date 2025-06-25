@@ -85,12 +85,13 @@ void TFTHelloWorld::setup() {
   this->tft_->init();
   this->tft_->setRotation(2);
   this->tft_->fillScreen(TFT_BLACK);
+  this->tft_->setTextFont(4);  // Use smoother font 4
   this->tft_->setTextColor(TFT_WHITE, TFT_BLACK);
-  this->tft_->setTextSize(3);
+  this->tft_->setTextSize(1);
   this->tft_->setTextDatum(MC_DATUM);
   this->tft_->drawString("Ahoj Medliku", this->tft_->width() / 2, this->tft_->height() / 2);
   // Show connecting to wifi message below main text
-  this->tft_->setTextSize(2);
+  this->tft_->setTextSize(1);
   int y = this->tft_->height() / 2 + 40;
   this->tft_->drawString("Connecting to wifi", this->tft_->width() / 2, y);
 }
@@ -158,45 +159,49 @@ void draw_forbidden_icon(TFT_eSPI *tft, int x, int y) {
 }
 
 void draw_zzz_icon(TFT_eSPI *tft, int x, int y) {
+  tft->setTextFont(4);  // Use smoother font 4
   tft->setTextColor(TFT_CYAN, TFT_BLACK);
-  tft->setTextSize(2);
+  tft->setTextSize(1);
   tft->drawString("Zzz", x, y);
 }
 
 void draw_top_line(TFT_eSPI *tft, bool wifi_connected, const std::map<std::string, DeviceState> &states, int standby_time, const std::string &datetime) {
+  tft->setTextFont(2);  // Use smaller smooth font 2 for header
   tft->setTextColor(TFT_WHITE, TFT_BLACK);
-  tft->setTextSize(1);
-  int y = 10;
+  tft->setTextSize(1);  // Normal size but smaller font
+  int y = 12;  // Adjusted position for the smaller font
   // Standby time (left)
   char buf[16];
   snprintf(buf, sizeof(buf), "%dm", standby_time);
-  tft->drawString(buf, 5, y);
+  tft->drawString(buf, 15, y);
   // WiFi icon (left of datetime)
   draw_wifi_icon(tft, 60, y+5, wifi_connected);
   // Speaker dots (left)
   draw_speaker_dots(tft, 90, y+5, states);
   // Date/time (right)
   tft->setTextDatum(TR_DATUM);
-  tft->drawString(datetime.c_str(), tft->width()-5, y);
+  tft->drawString(datetime.c_str(), tft->width()-5, y-8);
   tft->setTextDatum(MC_DATUM);
 }
 
 void draw_bottom_line(TFT_eSPI *tft, const std::string &status, bool normal) {
+  tft->setTextFont(4);  // Use smoother font 4
   tft->setTextColor(TFT_WHITE, TFT_BLACK);
-  int y = tft->height() - 24;
+  int y = tft->height() - 28;  // Adjusted y position for larger font
   if (normal) {
-    tft->setTextSize(2);  // Keep size 2 but use a shorter message
+    tft->setTextSize(1);  // Reduced size since font 4 is larger
     tft->drawString("Press for menu", tft->width()/2, y);
   } else {
-    tft->setTextSize(2);  // Keep original size for status messages
+    tft->setTextSize(1);  // Reduced size since font 4 is larger
     tft->drawString(status.c_str(), tft->width()/2, y);
   }
 }
 
 void draw_middle_area(TFT_eSPI *tft, float volume, bool muted, bool standby) {
-  int y = tft->height()/2;
+  int y = tft->height()/2 - 8;  // Moved 8 pixels up
+  tft->setTextFont(8);  // Use the largest smooth font for the volume display
   tft->setTextColor(TFT_YELLOW, TFT_BLACK);
-  tft->setTextSize(6);
+  tft->setTextSize(2);
   char buf[8];
   snprintf(buf, sizeof(buf), "%.0f", volume);
   tft->drawString(buf, tft->width()/2, y);
