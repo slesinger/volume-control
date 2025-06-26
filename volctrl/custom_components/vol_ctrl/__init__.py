@@ -1,4 +1,4 @@
-# custom_components/tft_hello_world/__init__.py
+# custom_components/vol_ctrl/__init__.py
 
 import esphome.codegen as cg
 import esphome.config_validation as cv
@@ -11,11 +11,11 @@ DEPENDENCIES = ["spi"]
 
 CODEOWNERS = ["@honza"]
 
-tft_hello_world_ns = cg.esphome_ns.namespace('tft_hello_world')
-TFTHelloWorld = tft_hello_world_ns.class_('TFTHelloWorld', cg.Component, spi.SPIDevice)
+vol_ctrl_ns = cg.esphome_ns.namespace('vol_ctrl')
+VolCtrl = vol_ctrl_ns.class_('VolCtrl', cg.Component, spi.SPIDevice)
 
 CONFIG_SCHEMA = cv.Schema({
-    cv.GenerateID(): cv.declare_id(TFTHelloWorld),
+    cv.GenerateID(): cv.declare_id(VolCtrl),
 }).extend(cv.COMPONENT_SCHEMA).extend(spi.spi_device_schema(cs_pin_required=False))
 
 

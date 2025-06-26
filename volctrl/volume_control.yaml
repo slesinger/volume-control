@@ -25,7 +25,7 @@ esphome:
       - -Isrc/esphome/components/ota
       - -Isrc/esphome/components/psram
       - -Isrc/esphome/components/wifi
-      - -Isrc/esphome/components/tft_hello_world # Your custom component
+      - -Isrc/esphome/components/vol_ctrl # Your custom component
       - -Isrc/esphome/components/spi              # The MOST IMPORTANT one
 
 esp32:
@@ -60,8 +60,8 @@ external_components:
       path: custom_components
 
 # Use our custom component
-tft_hello_world:
-  id: my_tft_hello_world
+vol_ctrl:
+  id: my_vol_ctrl
   spi_id: spi1
   # cs_pin: 13 # this is fake
 
