@@ -129,25 +129,30 @@ void draw_middle_area(TFT_eSPI *tft, float volume, bool muted, bool standby, boo
   tft->setTextFont(8);
   tft->setTextSize(2);
   char buf[8];
-  if (volume == -999.0f || !volume_ok) {
-    // Show -- for the initial invalid state (-999.0f) or when volume data is not reliable
+  // Always show the last known volume value, except for the initial invalid state
+  if (volume == -999.0f) {
+    // Show -- only for the initial invalid state
     snprintf(buf, sizeof(buf), "--");
   } else {
+    // Show the volume value (current or previous)
     snprintf(buf, sizeof(buf), "%.0f", volume);
   }
   if (volume_ok) {
     tft->setTextColor(TFT_YELLOW, TFT_BLACK);
     tft->drawString(buf, tft->width()/2, y);
   } else {
+    // Show previous known information with gray color
     tft->setTextColor(TFT_DARKGREY, TFT_BLACK);
     tft->drawString(buf, tft->width()/2, y);
-    draw_exclamation_mark(tft, tft->width()/2 + 40, y, font_height); // adjust offset as needed
+    // Show exclamation mark to indicate error retrieving data
+    draw_exclamation_mark(tft, tft->width()/2 + 40, y, font_height); 
   }
   if (muted) draw_forbidden_icon(tft, tft->width()/2, y);
   if (standby) draw_zzz_icon(tft, tft->width()/2, y-40);
   
-  // Only draw volume bar if we have valid volume data
-  if (volume != -999.0f && volume_ok) {
+  // Draw volume bar with the last known value, even when there's an error
+  // Only skip drawing for the initial invalid state
+  if (volume != -999.0f) {
     int bar_width = tft->width() - 40;
     int bar_height = 8;
     int bar_y = y + 50;
@@ -158,9 +163,18 @@ void draw_middle_area(TFT_eSPI *tft, float volume, bool muted, bool standby, boo
     // Always draw the empty bar outline
     tft->fillRect(20, bar_y, bar_width, bar_height, 0x4208);
     if (fill_width > 0) {
-      uint16_t bar_color = TFT_GREEN;
-      if (volume > -15) bar_color = TFT_YELLOW;
-      if (volume > -5) bar_color = TFT_RED;
+      uint16_t bar_color;
+      if (volume_ok) {
+        // Normal colors when data is valid
+        bar_color = TFT_GREEN;
+        if (volume > -15) bar_color = TFT_YELLOW;
+        if (volume > -5) bar_color = TFT_RED;
+      } else {
+        // Use a dimmer color when showing previous data due to error
+        bar_color = 0x3186; // Dimmer green
+        if (volume > -15) bar_color = 0x5284; // Dimmer yellow
+        if (volume > -5) bar_color = 0x4124;  // Dimmer red
+      }
       tft->fillRect(20, bar_y, fill_width, bar_height, bar_color);
     }
   }
