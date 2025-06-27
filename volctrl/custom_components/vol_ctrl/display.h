@@ -16,7 +16,8 @@ void draw_forbidden_icon(TFT_eSPI *tft, int x, int y);
 void draw_zzz_icon(TFT_eSPI *tft, int x, int y);
 void draw_top_line(TFT_eSPI *tft, bool wifi_connected, const std::map<std::string, DeviceState> &states, int standby_time, const std::string &datetime);
 void draw_bottom_line(TFT_eSPI *tft, const std::string &status, bool normal);
-void draw_middle_area(TFT_eSPI *tft, float volume, bool muted, bool standby);
+void draw_middle_area(TFT_eSPI *tft, float volume, bool muted, bool standby, bool volume_ok);
+void draw_exclamation_mark(TFT_eSPI *tft, int x, int y, int height);
 
 }  // namespace display
 }  // namespace vol_ctrl

@@ -9,6 +9,8 @@
 #include <cstring>
 #include <map>
 #include "esphome/core/hal.h"
+#include <lwip/netif.h>
+#include <lwip/ip_addr.h>
 
 namespace esphome {
 namespace vol_ctrl {
@@ -29,6 +31,8 @@ bool send_ssc_command(const std::string &ipv6, const std::string &command, std::
   int sock = -1;
   bool success = false;
   
+  ESP_LOGI(TAG, "Attempting to connect to [%s]:45", ipv6.c_str());
+
   // Create socket
   sock = socket(AF_INET6, SOCK_STREAM, 0);
   if (sock < 0) {
@@ -57,23 +61,28 @@ bool send_ssc_command(const std::string &ipv6, const std::string &command, std::
   memset(&sa, 0, sizeof(sa));
   sa.sin6_family = AF_INET6;
   sa.sin6_port = htons(45);  // Default SSC port is 45
-  if (inet_pton(AF_INET6, ipv6.c_str(), &sa.sin6_addr) != 1) {
+  int pton_result = inet_pton(AF_INET6, ipv6.c_str(), &sa.sin6_addr);
+  ESP_LOGI(TAG, "inet_pton result: %d", pton_result);
+  if (pton_result != 1) {
     ESP_LOGE(TAG, "Invalid IPv6 address format: %s", ipv6.c_str());
     close(sock);
     return false;
   }
 
-  if (connect(sock, (struct sockaddr *)&sa, sizeof(sa)) < 0) {
-    ESP_LOGD(TAG, "Failed to connect to %s: %d", ipv6.c_str(), errno);
+  int connect_result = connect(sock, (struct sockaddr *)&sa, sizeof(sa));
+  ESP_LOGI(TAG, "connect() result: %d, errno: %d", connect_result, errno);
+  if (connect_result < 0) {
+    ESP_LOGE(TAG, "Failed to connect to %s: %d (errno: %d)", ipv6.c_str(), connect_result, errno);
     close(sock);
     return false;
   }
 
-  // Send the command
+  // Always send command with CRLF line ending as required by the protocol
   std::string request = command + "\r\n";
   int sent = 0, total_sent = 0;
-  while (total_sent < request.length()) {
-    sent = ::send(sock, request.c_str() + total_sent, request.length() - total_sent, 0);
+  while (total_sent < (int)request.length()) {
+    sent = send(sock, request.c_str() + total_sent, request.length() - total_sent, 0);
+    ESP_LOGI(TAG, "send() returned: %d, errno: %d", sent, errno);
     if (sent < 0) {
       ESP_LOGE(TAG, "Failed to send command: %d", errno);
       close(sock);
@@ -86,6 +95,7 @@ bool send_ssc_command(const std::string &ipv6, const std::string &command, std::
   char buffer[512];
   memset(buffer, 0, sizeof(buffer));
   int bytes_received = recv(sock, buffer, sizeof(buffer) - 1, 0);
+  ESP_LOGI(TAG, "recv() returned: %d, errno: %d", bytes_received, errno);
   if (bytes_received < 0) {
     ESP_LOGE(TAG, "Failed to receive response: %d", errno);
     close(sock);
@@ -178,8 +188,28 @@ const std::map<std::string, DeviceState>& get_device_states() {
   return device_states;
 }
 
+void log_ipv6_addresses() {
+  ESP_LOGI(TAG, "log_ipv6_addresses() called");
+  struct netif *nif = netif_list;
+  while (nif != nullptr) {
+    char ifname[8];
+    snprintf(ifname, sizeof(ifname), "%c%c%d", nif->name[0], nif->name[1], nif->num);
+    for (int i = 0; i < LWIP_IPV6_NUM_ADDRESSES; ++i) {
+      if (!ip6_addr_isvalid(netif_ip6_addr_state(nif, i))) continue;
+      char buf[64];
+      ip6addr_ntoa_r(netif_ip6_addr(nif, i), buf, sizeof(buf));
+      ESP_LOGI(TAG, "Interface %s IPv6 addr[%d]: %s", ifname, i, buf);
+    }
+    nif = nif->next;
+  }
+}
+
 // Initialize the network module with default devices
 void init() {
+  ESP_LOGI(TAG, "init() called");
+  // Log all IPv6 addresses at startup
+  log_ipv6_addresses();
+  
   // Here you would normally load devices from persistent storage
   // For now, hardcoding the known devices from the original code
   register_device("Left-6473470117", "2a00:1028:8390:75ee:2a36:38ff:fe61:25b9");

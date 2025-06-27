@@ -21,16 +21,7 @@ void VolCtrl::setup() {
   this->tft_->init();
   this->tft_->setRotation(2);
   this->tft_->fillScreen(TFT_BLACK);
-  this->tft_->setTextFont(4);  // Use smoother font 4
-  this->tft_->setTextColor(TFT_WHITE, TFT_BLACK);
-  this->tft_->setTextSize(1);
-  this->tft_->setTextDatum(MC_DATUM);
-  this->tft_->drawString("Volume Control", this->tft_->width() / 2, this->tft_->height() / 2);
-  
-  // Show connecting to wifi message below main text
-  this->tft_->setTextSize(1);
-  int y = this->tft_->height() / 2 + 40;
-  this->tft_->drawString("Connecting to wifi", this->tft_->width() / 2, y);
+  // Do not display anything yet, wait for main loop to draw the UI
   
   // Initialize network subsystem
   network::init();
@@ -163,61 +154,18 @@ void draw_bottom_line(TFT_eSPI *tft, const std::string &status, bool normal) {
   }
 }
 
-void draw_middle_area(TFT_eSPI *tft, float volume, bool muted, bool standby) {
-  int y = tft->height()/2 - 8;  // Moved 8 pixels up
-  tft->setTextFont(8);  // Use the largest smooth font for the volume display
-  tft->setTextColor(TFT_YELLOW, TFT_BLACK);
-  tft->setTextSize(2);
-  
-  char buf[8];
-  // Handle the case when no speakers are connected (volume is 0)
-  if (volume == 0.0f) {
-    snprintf(buf, sizeof(buf), "--");
-  } else {
-    snprintf(buf, sizeof(buf), "%.0f", volume);
-  }
-  
-  tft->drawString(buf, tft->width()/2, y);
-  
-  // Display muted and standby icons
-  if (muted) draw_forbidden_icon(tft, tft->width()/2, y);
-  if (standby) draw_zzz_icon(tft, tft->width()/2, y-40);
-  
-  // Draw volume bar below the number
-  {
-    int bar_width = tft->width() - 40;  // Leave 20px margin on each side
-    int bar_height = 8;
-    int bar_y = y + 50;
-    int fill_width = 0;
-    
-    // Volume ranges from -60 to 0 dB in SSC protocol
-    if (volume >= -60 && volume <= 0) {
-      fill_width = (int)((volume + 60) / 60.0f * bar_width);
-    }
-    
-    // Draw background bar
-    tft->fillRect(20, bar_y, bar_width, bar_height, 0x4208); // Dark gray
-    // Draw filled part
-    if (fill_width > 0) {
-      uint16_t bar_color = TFT_GREEN;
-      if (volume > -15) bar_color = TFT_YELLOW;  // Getting loud
-      if (volume > -5) bar_color = TFT_RED;      // Very loud
-      tft->fillRect(20, bar_y, fill_width, bar_height, bar_color);
-    }
-  }
-}
-
 void VolCtrl::loop() {
   
   uint32_t now = millis();
   bool wifi_connected = wifi::global_wifi_component->is_connected();
   bool need_redraw = false;
   bool devices_changed = false;
-  bool muted = false;
-  bool standby = false;
-  float volume = 0.0f;
-  int standby_time = 90; // Default value
+  bool muted = this->muted_prev_;
+  bool standby = this->standby_prev_;
+  float volume = this->volume_prev_;
+  int standby_time = this->standby_time_prev_;
   int active_device_count = 0;
+  bool volume_ok = false;
   
   // Get reference to device states
   const auto& device_states = network::get_device_states();
@@ -237,16 +185,17 @@ void VolCtrl::loop() {
   // Check device details every 5 seconds
   if ((now - this->last_detail_check_ > 5000 || this->first_run_) && wifi_connected) {
     this->last_detail_check_ = now;
-    
-    // Find first active device to get settings from
     for (const auto &entry : device_states) {
       const std::string &ipv6 = entry.first;
       if (entry.second.status == UP) {
-        // Query volume
         float new_volume = 0.0f;
         if (network::get_device_volume(ipv6, new_volume)) {
           if (this->volume_prev_ != new_volume) need_redraw = true;
           volume = new_volume;
+          volume_ok = true;
+        } else {
+          volume = this->volume_prev_;
+          volume_ok = false;
         }
         
         // Query mute status
@@ -257,10 +206,13 @@ void VolCtrl::loop() {
         }
         
         // Standby time
-        int new_standby_time = 90;
+        int new_standby_time = 0;
         if (network::get_device_standby_time(ipv6, new_standby_time)) {
           if (this->standby_time_prev_ != new_standby_time) need_redraw = true;
           standby_time = new_standby_time;
+        } else {
+          // Keep previous value if we couldn't get a new one
+          standby_time = this->standby_time_prev_;
         }
         
         // Standby status already fetched in is_device_up
@@ -304,9 +256,9 @@ void VolCtrl::loop() {
   // Perform redraw if needed
   if (need_full_redraw) {
     this->tft_->fillScreen(TFT_BLACK);
-    display::draw_top_line(this->tft_, wifi_connected, device_states, standby_time, this->datetime_);
-    display::draw_middle_area(this->tft_, volume, muted, standby);
-    display::draw_bottom_line(this->tft_, this->status_, this->normal_);
+    esphome::vol_ctrl::display::draw_top_line(this->tft_, wifi_connected, device_states, standby_time, this->datetime_);
+    esphome::vol_ctrl::display::draw_middle_area(this->tft_, volume, muted, standby, volume_ok);
+    esphome::vol_ctrl::display::draw_bottom_line(this->tft_, this->status_, this->normal_);
     
     // Update previous values
     this->wifi_connected_prev_ = wifi_connected;

@@ -35,29 +35,20 @@ void draw_wifi_icon(TFT_eSPI *tft, int x, int y, bool connected) {
 void draw_speaker_dots(TFT_eSPI *tft, int x, int y, const std::map<std::string, DeviceState> &states) {
   int dx = 18;
   int i = 0;
-  
-  // Loop through all devices in the states map
   for (const auto &entry : states) {
-    const std::string &ipv6 = entry.first;
     const DeviceState &state = entry.second;
-    
     bool up = (state.status == UP);
     bool standby = (up && state.standby);
-    
-    // Different colors for different states
     uint16_t color;
     if (!up) {
-      color = TFT_RED;      // Device down - red
+      color = TFT_RED; // Device down - red
     } else if (standby) {
-      color = TFT_BLUE;     // Device in standby - blue
+      color = TFT_BLUE; // Standby - blue
     } else {
-      color = TFT_GREEN;    // Device up and active - green
+      color = TFT_GREEN; // Connected - green
     }
-    
     tft->fillCircle(x + i * dx, y, 7, color);
     tft->drawCircle(x + i * dx, y, 7, TFT_WHITE);
-    
-    // Show a small "M" if the device is muted
     if (up && state.muted) {
       tft->setTextFont(1);
       tft->setTextColor(TFT_BLACK, color);
@@ -65,9 +56,17 @@ void draw_speaker_dots(TFT_eSPI *tft, int x, int y, const std::map<std::string, 
       tft->setTextDatum(MC_DATUM);
       tft->drawString("M", x + i * dx, y);
     }
-    
     i++;
   }
+}
+
+void draw_exclamation_mark(TFT_eSPI *tft, int x, int y, int height) {
+  int mark_height = height / 2;
+  int mark_width = mark_height / 4;
+  int ex_x = x + height / 2; // right of number
+  int ex_y = y - mark_height / 2;
+  tft->fillRect(ex_x, ex_y, mark_width, mark_height - mark_width, TFT_RED); // vertical
+  tft->fillRect(ex_x, ex_y + mark_height - mark_width, mark_width, mark_width, TFT_RED); // dot
 }
 
 void draw_forbidden_icon(TFT_eSPI *tft, int x, int y) {
@@ -90,8 +89,12 @@ void draw_top_line(TFT_eSPI *tft, bool wifi_connected, const std::map<std::strin
   
   // Standby time (left)
   char buf[16];
-  snprintf(buf, sizeof(buf), "%dm", standby_time);
-  tft->drawString(buf, 15, y);
+  if (standby_time > 0) {
+    snprintf(buf, sizeof(buf), "%dm", standby_time);
+    tft->drawString(buf, 15, y);
+  } else {
+    tft->drawString("--m", 15, y);
+  }
   
   // WiFi icon (left of datetime)
   draw_wifi_icon(tft, 60, y+5, wifi_connected);
@@ -120,46 +123,44 @@ void draw_bottom_line(TFT_eSPI *tft, const std::string &status, bool normal) {
   }
 }
 
-void draw_middle_area(TFT_eSPI *tft, float volume, bool muted, bool standby) {
-  int y = tft->height()/2 - 8;  // Moved 8 pixels up
-  tft->setTextFont(8);  // Use the largest smooth font for the volume display
-  tft->setTextColor(TFT_YELLOW, TFT_BLACK);
+void draw_middle_area(TFT_eSPI *tft, float volume, bool muted, bool standby, bool volume_ok) {
+  int y = tft->height()/2 - 8;
+  int font_height = 64; // Approximate for font 8, size 2
+  tft->setTextFont(8);
   tft->setTextSize(2);
-  
   char buf[8];
-  // Handle the case when no speakers are connected (volume is 0)
-  if (volume == 0.0f) {
+  if (volume == -999.0f || !volume_ok) {
+    // Show -- for the initial invalid state (-999.0f) or when volume data is not reliable
     snprintf(buf, sizeof(buf), "--");
   } else {
     snprintf(buf, sizeof(buf), "%.0f", volume);
   }
-  
-  tft->drawString(buf, tft->width()/2, y);
-  
-  // Display muted and standby icons
+  if (volume_ok) {
+    tft->setTextColor(TFT_YELLOW, TFT_BLACK);
+    tft->drawString(buf, tft->width()/2, y);
+  } else {
+    tft->setTextColor(TFT_DARKGREY, TFT_BLACK);
+    tft->drawString(buf, tft->width()/2, y);
+    draw_exclamation_mark(tft, tft->width()/2 + 40, y, font_height); // adjust offset as needed
+  }
   if (muted) draw_forbidden_icon(tft, tft->width()/2, y);
   if (standby) draw_zzz_icon(tft, tft->width()/2, y-40);
   
-  // Draw volume bar below the number
-  if (volume != 0.0f) {
-    int bar_width = tft->width() - 40;  // Leave 20px margin on each side
+  // Only draw volume bar if we have valid volume data
+  if (volume != -999.0f && volume_ok) {
+    int bar_width = tft->width() - 40;
     int bar_height = 8;
     int bar_y = y + 50;
     int fill_width = 0;
-    
-    // Volume ranges from -60 to 0 dB in SSC protocol
     if (volume >= -60 && volume <= 0) {
       fill_width = (int)((volume + 60) / 60.0f * bar_width);
     }
-    
-    // Draw background bar
-    tft->fillRect(20, bar_y, bar_width, bar_height, 0x4208); // Dark gray
-    
-    // Draw filled part
+    // Always draw the empty bar outline
+    tft->fillRect(20, bar_y, bar_width, bar_height, 0x4208);
     if (fill_width > 0) {
       uint16_t bar_color = TFT_GREEN;
-      if (volume > -15) bar_color = TFT_YELLOW;  // Getting loud
-      if (volume > -5) bar_color = TFT_RED;      // Very loud
+      if (volume > -15) bar_color = TFT_YELLOW;
+      if (volume > -5) bar_color = TFT_RED;
       tft->fillRect(20, bar_y, fill_width, bar_height, bar_color);
     }
   }
