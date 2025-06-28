@@ -30,6 +30,8 @@ esphome:
 
 esp32:
   board: lolin32
+  framework:
+    type: arduino
 
 wifi:
   ssid: !secret wifi_ssid
@@ -45,10 +47,32 @@ psram:
 
 api:
   password: !secret api_key
+  services:
+    - service: set_volume
+      variables:
+        level: float
+      then:
+        - lambda: 'id(my_vol_ctrl).set_volume(level);'
+    
+    - service: toggle_mute
+      then:
+        - lambda: 'id(my_vol_ctrl).toggle_mute();'
+    
+    - service: volume_up
+      then:
+        - lambda: 'id(my_vol_ctrl).volume_increase();'
+    
+    - service: volume_down
+      then:
+        - lambda: 'id(my_vol_ctrl).volume_decrease();'
 
 ota:
   platform: esphome
   password: !secret ota_password
+
+web_server:
+  port: 80
+  version: 2
 
 spi:
   id: spi1
@@ -64,24 +88,51 @@ external_components:
       path: custom_components
 
 # Use our custom component
+output:
+  - platform: ledc
+    id: backlight_output
+    pin: GPIO17
+    frequency: 1000Hz
+    min_power: 0.1
+    max_power: 1.0
+
 vol_ctrl:
   id: my_vol_ctrl
   spi_id: spi1
-  # cs_pin: 13 # this is fake
+  backlight_pin: backlight_output
 
-# rotary_encoder:
-#   - id: encoder1
-#     pin_a: GPIO32
-#     pin_b: GPIO33
-#     min_value: 0
-#     max_value: 100
-#     resolution: 1
+sensor:
+  - platform: rotary_encoder
+    id: volume_encoder
+    pin_a: GPIO32
+    pin_b: GPIO33
+    min_value: 0
+    max_value: 120
+    resolution: 1
+    on_value:
+      then:
+        - lambda: |-
+            // Set volume directly from encoder value
+            id(my_vol_ctrl).set_volume(x);
 
-# binary_sensor:
-#   - platform: gpio
-#     pin: GPIO25
-#     name: "Encoder Button"
-#     id: encoder_button
-#     on_press:
-#       then:
-#         - logger.log: "Encoder button pressed"
+binary_sensor:
+  - platform: gpio
+    pin: 
+      number: GPIO25
+      mode: INPUT_PULLUP
+    name: "Encoder Button"
+    id: encoder_button
+    filters:
+      - delayed_on: 50ms  # Debounce
+    on_press:
+      then:
+        - logger.log: "Encoder button press detected"
+        # Use a simple click to toggle mute
+        - lambda: 'id(my_vol_ctrl).toggle_mute();'
+    on_multi_click:
+      - timing:
+          # Long press
+          - ON for at least 1s
+        then:
+          - logger.log: "Long press detected - enter menu"
+          - lambda: 'id(my_vol_ctrl).enter_menu();'

@@ -23,7 +23,7 @@ It uses Senheiser Sound Control Protocol (SSP) to control the volume of the spea
 - Display GMT130 240x240px, Driver IC ST7789, SPI interface, it needs HW SPI controller, needs init with parameter SPI_MODE2 (it does not have CS pin)
 - Rotary encoder with push button KY-040
 
-Suggest what esphome packages to use to control the aboe hardware. Suggest yaml configuration for the ESP8266 and provide custom componenets where packages are not available.
+The hardware is controlled using ESPHome with custom components for display, network communication, and speaker control.
 
 ## Wiring
 
@@ -273,4 +273,61 @@ IPv6 address: 2a00:1028:8390:75ee:2a36:38ff:fe61:279e
 {"audio":{"out":{"eq3":{"gain":[0.000,0.000,0.000,0.000,0.000,0.000,0.000,0.000,0.000,0.000,0.000,0.000,0.000,0.000,0.000,0.000,0.000,0.000,0.000,0.000]}}}}
 {"audio":{"out":{"eq3":{"boost":[0.000,0.000,0.000,0.000,0.000,0.000,0.000,0.000,0.000,0.000,0.000,0.000,0.000,0.000,0.000,0.000,0.000,0.000,0.000,0.000]}}}}
 {"audio":{"out":{"eq3":{"desc":"calibration EQ"}}}}
-```
+
+## Implementation
+
+This project is implemented using the following components:
+
+1. **ESPHome** as the base framework
+2. **TFT_eSPI library** for display control
+3. **Rotary encoder** for volume control
+4. **Custom C++ components** for:
+   - Speaker discovery and communication
+   - UI rendering
+   - Menu navigation
+   - Network communication using IPv6
+   - Integration with Home Assistant
+
+### ESPHome Configuration
+
+The main configuration is located in `volctrl/volume_control.yaml` and includes:
+
+- ESP32 hardware settings
+- WiFi and network configuration with IPv6 support
+- SPI display configuration
+- Rotary encoder and button handling
+- Custom component for volume control
+
+### Custom Components
+
+The project includes these custom components:
+
+1. **vol_ctrl** - Main component controlling the UI and speaker interactions
+2. **network** - Handles IPv6 communication with speakers using Sennheiser Sound Control Protocol
+3. **display** - UI rendering and screen layout management
+4. **device_state** - State tracking for connected speaker devices
+5. **utils** - Helper functions for parsing JSON responses and other utilities
+
+### Home Assistant Integration
+
+The controller automatically integrates with Home Assistant and provides these services:
+
+- `set_volume` - Set volume level (0-120)
+- `toggle_mute` - Toggle speaker mute state
+- `volume_up` - Increase volume by 1dB
+- `volume_down` - Decrease volume by 1dB
+
+### Building and Installation
+
+1. Install ESPHome:
+   ```bash
+   pip install esphome
+   ```
+
+2. Build and flash:
+   ```bash
+   cd volctrl
+   esphome run volume_control.yaml
+   ```
+
+3. After flashing, the device will automatically connect to your WiFi network and begin speaker discovery.

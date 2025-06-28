@@ -2,9 +2,11 @@
 
 #include "esphome/core/component.h"
 #include "esphome/components/spi/spi.h"
+#include "esphome/components/output/float_output.h"
 #include <map>
 #include <string>
 #include "device_state.h"
+#include "network.h"
 
 // Forward-declare the TFT_eSPI class instead of including the whole header
 class TFT_eSPI;
@@ -20,6 +22,29 @@ class VolCtrl : public Component, public spi::SPIDevice<spi::BIT_ORDER_MSB_FIRST
   void setup() override;
   void loop() override;
   void dump_config() override;
+  
+  // User interface methods
+  void volume_increase();
+  void volume_decrease();
+  void toggle_mute();
+  void enter_menu();
+  void exit_menu();
+  
+  // Set backlight control pin
+  void set_backlight_pin(output::FloatOutput *backlight_pin) { backlight_pin_ = backlight_pin; }
+  
+  // Menu navigation methods
+  void menu_up();
+  void menu_down();
+  void menu_select();
+  
+  // Direct volume setting for Home Assistant
+  void set_volume(float level);
+
+  // Helper for HA services
+  const std::map<std::string, DeviceState>& get_device_states() {
+    return network::get_device_states();
+  }
 
  protected:
   // TFT display instance
@@ -40,6 +65,23 @@ class VolCtrl : public Component, public spi::SPIDevice<spi::BIT_ORDER_MSB_FIRST
   uint32_t last_device_check_{0};
   uint32_t last_detail_check_{0};
   bool first_run_{true};
+  
+  // Menu state
+  bool in_menu_{false};
+  int menu_level_{0};  // 0 = main menu, 1 = submenu, etc.
+  int menu_position_{0};
+  int menu_items_count_{0};
+  float volume_step_{1.0f};  // Default 1dB steps
+  uint32_t last_menu_toggle_{0};  // Timestamp of last menu enter/exit to prevent rapid toggling
+  
+  // Display settings
+  int backlight_level_{100};  // 0-100%
+  int display_timeout_{60};  // In seconds
+  uint32_t last_interaction_{0};
+  bool display_active_{true};
+  
+  // Backlight control
+  output::FloatOutput *backlight_pin_{nullptr};
 };
 
 }  // namespace vol_ctrl
