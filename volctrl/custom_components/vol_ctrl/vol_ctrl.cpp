@@ -236,8 +236,38 @@ void VolCtrl::loop() {
     }
   }
   
-  // Only update screen every 100ms to avoid flicker
-  if (now - this->last_redraw_ < 100 && !this->first_run_ && !need_redraw) return;
+  // Check if any display update is needed
+  bool any_update = need_redraw || 
+                    devices_changed || 
+                    wifi_connected != this->wifi_connected_prev_ || 
+                    this->datetime_ != this->datetime_prev_ ||
+                    standby_time != this->standby_time_prev_ ||
+                    volume != this->volume_prev_ ||
+                    muted != this->muted_prev_ ||
+                    standby != this->standby_prev_ ||
+                    this->status_ != this->status_prev_ ||
+                    this->normal_ != this->normal_prev_;
+                    
+  // Only update screen every 100ms to avoid flicker, unless we have specific changes
+  if (now - this->last_redraw_ < 100 && !this->first_run_ && !any_update) return;
+  
+  // Log when we're doing a screen update and why
+  if (any_update && !this->first_run_) {
+    if (devices_changed) ESP_LOGD(TAG, "Screen update: Device status changed");
+    if (wifi_connected != this->wifi_connected_prev_) ESP_LOGD(TAG, "Screen update: WiFi status changed");
+    if (this->datetime_ != this->datetime_prev_) ESP_LOGD(TAG, "Screen update: DateTime changed");
+    if (standby_time != this->standby_time_prev_) ESP_LOGD(TAG, "Screen update: Standby time changed");
+    if (volume != this->volume_prev_) ESP_LOGD(TAG, "Screen update: Volume changed");
+    if (muted != this->muted_prev_) ESP_LOGD(TAG, "Screen update: Mute status changed");
+    if (standby != this->standby_prev_) ESP_LOGD(TAG, "Screen update: Standby status changed");
+    if (this->status_ != this->status_prev_ || this->normal_ != this->normal_prev_) 
+      ESP_LOGD(TAG, "Screen update: Status message changed");
+  } else if (this->first_run_) {
+    ESP_LOGD(TAG, "Screen update: Initial draw");
+  } else if (now - this->last_redraw_ >= 100) {
+    ESP_LOGD(TAG, "Screen update: Regular refresh");
+  }
+  
   this->last_redraw_ = now;
   this->first_run_ = false;
   
@@ -255,26 +285,58 @@ void VolCtrl::loop() {
   // Always update datetime from RTC
   this->datetime_ = utils::get_datetime_string();
   
-  // Determine if redraw is needed
-  bool need_full_redraw = wifi_connected != this->wifi_connected_prev_ || 
-                          this->datetime_ != this->datetime_prev_ ||
-                          this->normal_ != this->normal_prev_ ||
-                          devices_changed ||
-                          muted != this->muted_prev_ ||
-                          standby != this->standby_prev_ ||
-                          volume != this->volume_prev_ ||
-                          standby_time != this->standby_time_prev_;
-  
-  // Only redraw main screen if not in menu mode
-  if (need_full_redraw && !in_menu_) {
-    this->tft_->fillScreen(TFT_BLACK);
-    esphome::vol_ctrl::display::draw_top_line(this->tft_, wifi_connected, device_states, standby_time, this->datetime_);
-    esphome::vol_ctrl::display::draw_middle_area(this->tft_, volume, muted, standby, volume_ok);
-    esphome::vol_ctrl::display::draw_bottom_line(this->tft_, this->status_, this->normal_);
+  // Only update screen if not in menu mode
+  if (!in_menu_) {
+    // Initial screen draw on first run
+    if (this->first_run_) {
+      this->tft_->fillScreen(TFT_BLACK);
+      esphome::vol_ctrl::display::draw_top_line(this->tft_, wifi_connected, device_states, standby_time, this->datetime_);
+      esphome::vol_ctrl::display::draw_middle_area(this->tft_, volume, muted, standby, volume_ok);
+      esphome::vol_ctrl::display::draw_bottom_line(this->tft_, this->status_, this->normal_);
+    } else {
+      // Partial updates for changed elements only
+      if (wifi_connected != this->wifi_connected_prev_) {
+        esphome::vol_ctrl::display::update_wifi_status(this->tft_, 60, 17, wifi_connected, this->wifi_connected_prev_);
+      }
+      
+      if (this->datetime_ != this->datetime_prev_) {
+        esphome::vol_ctrl::display::update_datetime(this->tft_, this->datetime_, this->datetime_prev_);
+      }
+      
+      if (standby_time != this->standby_time_prev_) {
+        esphome::vol_ctrl::display::update_standby_time(this->tft_, standby_time, this->standby_time_prev_);
+      }
+      
+      if (volume != this->volume_prev_) {
+        esphome::vol_ctrl::display::update_volume_display(this->tft_, volume, this->volume_prev_, volume_ok);
+      }
+      
+      if (muted != this->muted_prev_) {
+        esphome::vol_ctrl::display::update_mute_status(this->tft_, muted, this->muted_prev_);
+      }
+      
+      if (standby != this->standby_prev_) {
+        esphome::vol_ctrl::display::update_standby_status(this->tft_, standby, this->standby_prev_);
+      }
+      
+      if (this->status_ != this->status_prev_ || this->normal_ != this->normal_prev_) {
+        esphome::vol_ctrl::display::update_status_message(this->tft_, this->status_, this->status_prev_, this->normal_, this->normal_prev_);
+      }
+      
+      // Update speaker dots if device status changed
+      if (devices_changed) {
+        // Use the defined screen region for speaker dots
+        esphome::vol_ctrl::display::ScreenRegion speaker_region = esphome::vol_ctrl::display::get_speaker_dots_region();
+        // Clear only the needed area
+        this->tft_->fillRect(speaker_region.x, speaker_region.y, speaker_region.w, speaker_region.h, TFT_BLACK);
+        esphome::vol_ctrl::display::draw_speaker_dots(this->tft_, 90, 17 + 5, device_states);
+      }
+    }
     
-    // Update previous values regardless, to avoid unnecessary redraws when exiting menu
+    // Update previous values to avoid unnecessary redraws
     this->wifi_connected_prev_ = wifi_connected;
     this->datetime_prev_ = this->datetime_;
+    this->status_prev_ = this->status_;
     this->normal_prev_ = this->normal_;
     this->muted_prev_ = muted;
     this->standby_prev_ = standby;
@@ -399,28 +461,8 @@ void VolCtrl::enter_menu() {
     menu_position_ = 0;
     menu_items_count_ = 7; // Number of items in main menu
     
-    // Redraw display in menu mode
-    this->tft_->fillScreen(TFT_BLACK);
-    this->tft_->setTextFont(4);
-    this->tft_->setTextColor(TFT_WHITE, TFT_BLACK);
-    this->tft_->setTextDatum(TL_DATUM); // Top-left alignment
-    
-    // Draw menu title
-    this->tft_->setTextFont(4);
-    this->tft_->drawString("MENU", 10, 10);
-    
-    // Draw menu items
-    this->tft_->setTextFont(2);
-    this->tft_->drawString("1. Exit menu", 20, 50);
-    this->tft_->drawString("2. Show devices", 20, 70);
-    this->tft_->drawString("3. Show settings", 20, 90);
-    this->tft_->drawString("4. Parametric EQ", 20, 110);
-    this->tft_->drawString("5. Discover devices", 20, 130);
-    this->tft_->drawString("6. Speaker parameters", 20, 150);
-    this->tft_->drawString("7. Volume settings", 20, 170);
-    
-    // Highlight current selection
-    this->tft_->fillRect(10, 50 + (menu_position_ * 20), 10, 10, TFT_YELLOW);
+    // Draw menu screen
+    display::draw_menu_screen(this->tft_, menu_level_, menu_position_, menu_items_count_);
   }
 }
 
@@ -432,8 +474,8 @@ void VolCtrl::exit_menu() {
     menu_level_ = 0;
     menu_position_ = 0;
     
-    // Force redraw of main screen
-    this->tft_->fillScreen(TFT_BLACK);
+    // We do need a full redraw when exiting the menu
+    // But set first_run to true so the loop will handle it with the proper data
     this->first_run_ = true;
     
     // Reset the rotary encoder value to current volume to avoid unexpected jumps
@@ -451,31 +493,27 @@ void VolCtrl::exit_menu() {
 
 void VolCtrl::menu_up() {
   if (in_menu_) {
+    int prev_position = menu_position_;
     menu_position_--;
     if (menu_position_ < 0) {
       menu_position_ = menu_items_count_ - 1;
     }
     
-    // Redraw menu with new selection
-    // Clear selector area
-    this->tft_->fillRect(10, 50, 10, (menu_items_count_ * 20), TFT_BLACK);
-    // Draw new selector
-    this->tft_->fillRect(10, 50 + (menu_position_ * 20), 10, 10, TFT_YELLOW);
+    // Update only the highlight, not the entire screen
+    display::draw_menu_item_highlight(this->tft_, menu_position_, prev_position);
   }
 }
 
 void VolCtrl::menu_down() {
   if (in_menu_) {
+    int prev_position = menu_position_;
     menu_position_++;
     if (menu_position_ >= menu_items_count_) {
       menu_position_ = 0;
     }
     
-    // Redraw menu with new selection
-    // Clear selector area
-    this->tft_->fillRect(10, 50, 10, (menu_items_count_ * 20), TFT_BLACK);
-    // Draw new selector
-    this->tft_->fillRect(10, 50 + (menu_position_ * 20), 10, 10, TFT_YELLOW);
+    // Update only the highlight, not the entire screen
+    display::draw_menu_item_highlight(this->tft_, menu_position_, prev_position);
   }
 }
 

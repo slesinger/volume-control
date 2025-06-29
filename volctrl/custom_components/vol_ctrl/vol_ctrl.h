@@ -57,6 +57,7 @@ class VolCtrl : public Component, public spi::SPIDevice<spi::BIT_ORDER_MSB_FIRST
   float volume_prev_{-999.0f};  // Invalid value to force first update
   int standby_time_prev_{-1};  // Invalid value to force first update
   std::string status_{"Connecting to WiFi"};
+  std::string status_prev_{""}; // Previous status message
   std::string datetime_{"--:-- --- --"};
   std::string datetime_prev_{""};
   bool normal_{false};

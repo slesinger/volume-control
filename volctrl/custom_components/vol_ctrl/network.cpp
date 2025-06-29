@@ -31,7 +31,7 @@ bool send_ssc_command(const std::string &ipv6, const std::string &command, std::
   int sock = -1;
   bool success = false;
   
-  ESP_LOGI(TAG, "Attempting to connect to [%s]:45", ipv6.c_str());
+  ESP_LOGD(TAG, "Attempting to connect to [%s]:45", ipv6.c_str());
 
   // Create socket
   sock = socket(AF_INET6, SOCK_STREAM, 0);
@@ -62,7 +62,6 @@ bool send_ssc_command(const std::string &ipv6, const std::string &command, std::
   sa.sin6_family = AF_INET6;
   sa.sin6_port = htons(45);  // Default SSC port is 45
   int pton_result = inet_pton(AF_INET6, ipv6.c_str(), &sa.sin6_addr);
-  ESP_LOGI(TAG, "inet_pton result: %d", pton_result);
   if (pton_result != 1) {
     ESP_LOGE(TAG, "Invalid IPv6 address format: %s", ipv6.c_str());
     close(sock);
@@ -70,7 +69,6 @@ bool send_ssc_command(const std::string &ipv6, const std::string &command, std::
   }
 
   int connect_result = connect(sock, (struct sockaddr *)&sa, sizeof(sa));
-  ESP_LOGI(TAG, "connect() result: %d, errno: %d", connect_result, errno);
   if (connect_result < 0) {
     ESP_LOGE(TAG, "Failed to connect to %s: %d (errno: %d)", ipv6.c_str(), connect_result, errno);
     close(sock);
@@ -82,7 +80,6 @@ bool send_ssc_command(const std::string &ipv6, const std::string &command, std::
   int sent = 0, total_sent = 0;
   while (total_sent < (int)request.length()) {
     sent = send(sock, request.c_str() + total_sent, request.length() - total_sent, 0);
-    ESP_LOGI(TAG, "send() returned: %d, errno: %d", sent, errno);
     if (sent < 0) {
       ESP_LOGE(TAG, "Failed to send command: %d", errno);
       close(sock);
@@ -95,7 +92,6 @@ bool send_ssc_command(const std::string &ipv6, const std::string &command, std::
   char buffer[512];
   memset(buffer, 0, sizeof(buffer));
   int bytes_received = recv(sock, buffer, sizeof(buffer) - 1, 0);
-  ESP_LOGI(TAG, "recv() returned: %d, errno: %d", bytes_received, errno);
   if (bytes_received < 0) {
     ESP_LOGE(TAG, "Failed to receive response: %d", errno);
     close(sock);
