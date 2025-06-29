@@ -23,6 +23,8 @@ class VolCtrl : public Component, public spi::SPIDevice<spi::BIT_ORDER_MSB_FIRST
   void loop() override;
   void dump_config() override;
   
+  float get_setup_priority() const override { return esphome::setup_priority::AFTER_CONNECTION; }
+  
   // User interface methods
   void volume_increase();
   void volume_decrease();
@@ -32,6 +34,7 @@ class VolCtrl : public Component, public spi::SPIDevice<spi::BIT_ORDER_MSB_FIRST
   
   // Set backlight control pin
   void set_backlight_pin(output::FloatOutput *backlight_pin) { backlight_pin_ = backlight_pin; }
+  void set_volume_step(float step) { volume_step_ = step; }
   
   // Menu navigation methods
   void menu_up();
@@ -83,6 +86,10 @@ class VolCtrl : public Component, public spi::SPIDevice<spi::BIT_ORDER_MSB_FIRST
   
   // Backlight control
   output::FloatOutput *backlight_pin_{nullptr};
+
+  // Rate limiting for volume changes
+  uint32_t last_volume_change_{0}; // Timestamp of last volume change to rate limit
+  bool user_adjusting_volume_{false}; // Flag to indicate user is actively changing volume
 };
 
 }  // namespace vol_ctrl

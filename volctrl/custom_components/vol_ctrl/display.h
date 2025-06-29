@@ -27,6 +27,7 @@ void update_datetime(TFT_eSPI *tft, const std::string &datetime, const std::stri
 void update_standby_time(TFT_eSPI *tft, int standby_time, int prev_standby_time);
 void update_volume_display(TFT_eSPI *tft, float volume, float prev_volume, bool volume_ok);
 void update_volume_display(TFT_eSPI *tft, float volume, float prev_volume, bool volume_ok, bool prev_volume_ok);
+void update_volume_display(TFT_eSPI *tft, float volume, float prev_volume, bool volume_ok, bool prev_volume_ok, bool user_adjusting);
 void update_mute_status(TFT_eSPI *tft, bool muted, bool prev_muted);
 void update_standby_status(TFT_eSPI *tft, bool standby, bool prev_standby);
 void update_status_message(TFT_eSPI *tft, const std::string &status, const std::string &prev_status, bool normal, bool prev_normal);

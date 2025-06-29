@@ -112,7 +112,8 @@ esphome dashboard .
 
 ## Normal operation (outside of menu)
 
-Rotary encoder will increase/decrease volume by 1 db step on each click. It will also toggle mute on push button click.
+Rotary encoder will increase/decrease volume by 1 db step on each click. On every click it will also update the display with current volume level in blue color. The number will change back to yellow when new reading, as confirmation, from the device will read real value of volume. When user changes volume level by rotating the volume knob, it will send a command to the speaker to set the new volume level, but it will not be more requent than once a second.
+If the volume is set to 0, it will toggle mute on the speaker. If the volume is set to non-zero value, it will toggle unmute on the speaker. It will also toggle mute on push button click.
 
 ## Menu operation
 

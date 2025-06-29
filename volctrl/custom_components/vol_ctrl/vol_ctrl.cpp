@@ -205,9 +205,13 @@ void VolCtrl::loop() {
           if (this->volume_prev_ != new_volume) need_redraw = true;
           volume = new_volume;
           volume_ok = true;
+          // Only here, when we get a real volume reading from the device, we can reset the user_adjusting_volume_ flag
+          // This ensures the volume stays blue until we get confirmation from the speakers
+          this->user_adjusting_volume_ = false;
         } else {
           volume = this->volume_prev_;
           volume_ok = false;
+          // Keep user_adjusting_volume_ flag as is when we fail to get volume
         }
         
         // Query mute status
@@ -307,8 +311,15 @@ void VolCtrl::loop() {
         esphome::vol_ctrl::display::update_standby_time(this->tft_, standby_time, this->standby_time_prev_);
       }
       
-      if (volume != this->volume_prev_) {
-        esphome::vol_ctrl::display::update_volume_display(this->tft_, volume, this->volume_prev_, volume_ok);
+      if (volume != this->volume_prev_ || this->user_adjusting_volume_) {
+        // Only reset the user_adjusting_volume_ flag if we got a genuine reading from the device
+        // This ensures the color stays blue until confirmed by the speakers
+        if (volume_ok && volume != this->volume_prev_) {
+          this->user_adjusting_volume_ = false;
+        }
+        
+        // Update display with appropriate color based on user adjustment status
+        esphome::vol_ctrl::display::update_volume_display(this->tft_, volume, this->volume_prev_, volume_ok, volume_ok, this->user_adjusting_volume_);
       }
       
       if (muted != this->muted_prev_) {
@@ -356,24 +367,57 @@ void VolCtrl::volume_increase() {
   
   ESP_LOGI(TAG, "Increasing volume");
   
-  // Iterate through all devices and increase volume
+  // Get current time
+  uint32_t now = millis();
+  
+  // Get current device states to determine current volume
   const auto &states = network::get_device_states();
+  float current_volume = this->volume_prev_;
+  
+  // Find an active device to get current volume
+  for (const auto &entry : states) {
+    if (entry.second.status == UP && !entry.second.standby) {
+      current_volume = entry.second.volume;
+      break;
+    }
+  }
+  
+  // Calculate new volume
+  float new_volume = current_volume + this->volume_step_;
+  // Cap at 120dB maximum
+  if (new_volume > 120.0f) {
+    new_volume = 120.0f;
+  }
+  
+  // Update the display immediately showing a blue color (user adjusting)
+  this->user_adjusting_volume_ = true;
+  esphome::vol_ctrl::display::update_volume_display(this->tft_, new_volume, this->volume_prev_, true, true, true);
+  this->volume_prev_ = new_volume;
+  
+  // Check if enough time has passed since last change (rate limiting to 1 second)
+  if (now - this->last_volume_change_ < 1000) {
+    // Too soon to send command, just update display
+    return;
+  }
+  
+  // Time to send command to the speaker
+  this->last_volume_change_ = now;
+  
+  // Iterate through all devices and increase volume
   for (const auto &entry : states) {
     const std::string &ipv6 = entry.first;
     const DeviceState &state = entry.second;
     
     // Only attempt to control devices that are up
     if (state.status == UP && !state.standby) {
-      float new_volume = state.volume + this->volume_step_;
-      // Cap at 120dB maximum
-      if (new_volume > 120.0f) {
-        new_volume = 120.0f;
-      }
-      
       std::string command = "{\"audio\":{\"out\":{\"level\":" + std::to_string(new_volume) + "}}}";
       std::string response;
       if (network::send_ssc_command(ipv6, command, response)) {
         ESP_LOGI(TAG, "Successfully set volume to %.1f for device %s", new_volume, ipv6.c_str());
+        // Don't reset user_adjusting_volume_ flag here
+        // It will be reset only when we get an actual volume reading from the device
+      } else {
+        ESP_LOGE(TAG, "Failed to set volume for device %s", ipv6.c_str());
       }
     }
   }
@@ -389,24 +433,57 @@ void VolCtrl::volume_decrease() {
   
   ESP_LOGI(TAG, "Decreasing volume");
   
-  // Iterate through all devices and decrease volume
+  // Get current time
+  uint32_t now = millis();
+  
+  // Get current device states to determine current volume
   const auto &states = network::get_device_states();
+  float current_volume = this->volume_prev_;
+  
+  // Find an active device to get current volume
+  for (const auto &entry : states) {
+    if (entry.second.status == UP && !entry.second.standby) {
+      current_volume = entry.second.volume;
+      break;
+    }
+  }
+  
+  // Calculate new volume
+  float new_volume = current_volume - this->volume_step_;
+  // Cap at 0dB minimum
+  if (new_volume < 0.0f) {
+    new_volume = 0.0f;
+  }
+  
+  // Update the display immediately showing a blue color (user adjusting)
+  this->user_adjusting_volume_ = true;
+  esphome::vol_ctrl::display::update_volume_display(this->tft_, new_volume, this->volume_prev_, true, true, true);
+  this->volume_prev_ = new_volume;
+  
+  // Check if enough time has passed since last change (rate limiting to 1 second)
+  if (now - this->last_volume_change_ < 1000) {
+    // Too soon to send command, just update display
+    return;
+  }
+  
+  // Time to send command to the speaker
+  this->last_volume_change_ = now;
+  
+  // Iterate through all devices and decrease volume
   for (const auto &entry : states) {
     const std::string &ipv6 = entry.first;
     const DeviceState &state = entry.second;
     
     // Only attempt to control devices that are up
     if (state.status == UP && !state.standby) {
-      float new_volume = state.volume - this->volume_step_;
-      // Cap at 0dB minimum
-      if (new_volume < 0.0f) {
-        new_volume = 0.0f;
-      }
-      
       std::string command = "{\"audio\":{\"out\":{\"level\":" + std::to_string(new_volume) + "}}}";
       std::string response;
       if (network::send_ssc_command(ipv6, command, response)) {
         ESP_LOGI(TAG, "Successfully set volume to %.1f for device %s", new_volume, ipv6.c_str());
+        // Don't reset user_adjusting_volume_ flag here
+        // It will be reset only when we get an actual volume reading from the device
+      } else {
+        ESP_LOGE(TAG, "Failed to set volume for device %s", ipv6.c_str());
       }
     }
   }
@@ -660,9 +737,63 @@ void VolCtrl::set_volume(float level) {
   
   ESP_LOGI(TAG, "Setting volume to %.1f", level);
   
+  // Get current time
+  uint32_t now = millis();
+  
   // Clamp volume to valid range
   if (level < 0.0f) level = 0.0f;
   if (level > 120.0f) level = 120.0f;
+  
+  // Handle mute toggling based on volume setting
+  // If volume is set to 0, mute the speakers
+  // If volume is non-zero, unmute the speakers
+  if (level == 0.0f) {
+    // Mute the speakers if they aren't already muted
+    if (!this->muted_prev_) {
+      std::string command = "{\"audio\":{\"out\":{\"mute\":true}}}";
+      const auto &states = network::get_device_states();
+      for (const auto &entry : states) {
+        const std::string &ipv6 = entry.first;
+        if (entry.second.status == UP && !entry.second.standby) {
+          std::string response;
+          if (network::send_ssc_command(ipv6, command, response)) {
+            ESP_LOGI(TAG, "Muted device %s due to volume 0", ipv6.c_str());
+          }
+        }
+      }
+    }
+    return;
+  } else if (this->muted_prev_) {
+    // Unmute if current volume is non-zero and speakers are muted
+    std::string command = "{\"audio\":{\"out\":{\"mute\":false}}}";
+    const auto &states = network::get_device_states();
+    for (const auto &entry : states) {
+      const std::string &ipv6 = entry.first;
+      if (entry.second.status == UP && !entry.second.standby) {
+        std::string response;
+        if (network::send_ssc_command(ipv6, command, response)) {
+          ESP_LOGI(TAG, "Unmuted device %s due to non-zero volume", ipv6.c_str());
+        }
+      }
+    }
+  }
+  
+  // Check if enough time has passed since last command (rate limiting)
+  if (now - this->last_volume_change_ < 1000) {
+    // Too soon, just update display but don't send command
+    this->user_adjusting_volume_ = true;
+    esphome::vol_ctrl::display::update_volume_display(this->tft_, level, this->volume_prev_, true, true, true);
+    this->volume_prev_ = level;
+    return;
+  }
+  
+  // Time to send command
+  this->last_volume_change_ = now;
+  
+  // Update display with blue color to indicate user change
+  this->user_adjusting_volume_ = true;
+  esphome::vol_ctrl::display::update_volume_display(this->tft_, level, this->volume_prev_, true, true, true);
+  this->volume_prev_ = level;
   
   // Iterate through all devices and set volume
   const auto &states = network::get_device_states();
@@ -676,6 +807,10 @@ void VolCtrl::set_volume(float level) {
       std::string response;
       if (network::send_ssc_command(ipv6, command, response)) {
         ESP_LOGI(TAG, "Successfully set volume to %.1f for device %s", level, ipv6.c_str());
+        // Don't reset user_adjusting_volume_ flag here
+        // It will be reset only when we get an actual volume reading from the device
+      } else {
+        ESP_LOGE(TAG, "Failed to set volume for device %s", ipv6.c_str());
       }
     }
   }

@@ -283,11 +283,17 @@ void update_standby_time(TFT_eSPI *tft, int standby_time, int prev_standby_time)
 // Backward-compatible version of update_volume_display for existing callers
 void update_volume_display(TFT_eSPI *tft, float volume, float prev_volume, bool volume_ok) {
   // Call the full version with the same volume_ok value for previous state
-  update_volume_display(tft, volume, prev_volume, volume_ok, volume_ok);
+  update_volume_display(tft, volume, prev_volume, volume_ok, volume_ok, false);
 }
 
+// Backward-compatible version with prev_volume_ok parameter
 void update_volume_display(TFT_eSPI *tft, float volume, float prev_volume, bool volume_ok, bool prev_volume_ok) {
-  if (volume == prev_volume && volume_ok == prev_volume_ok) return; // No change
+  // Call the full version with user_adjusting set to false
+  update_volume_display(tft, volume, prev_volume, volume_ok, prev_volume_ok, false);
+}
+
+void update_volume_display(TFT_eSPI *tft, float volume, float prev_volume, bool volume_ok, bool prev_volume_ok, bool user_adjusting) {
+  if (volume == prev_volume && volume_ok == prev_volume_ok && !user_adjusting) return; // No change
 
   // Clear previous volume display
   ScreenRegion region = get_volume_region();
@@ -306,7 +312,10 @@ void update_volume_display(TFT_eSPI *tft, float volume, float prev_volume, bool 
   }
 
   // Set color based on status
-  if (volume_ok) {
+  if (user_adjusting) {
+    // Use blue for user-initiated changes as per requirements
+    tft->setTextColor(TFT_BLUE, TFT_BLACK);
+  } else if (volume_ok) {
     tft->setTextColor(TFT_YELLOW, TFT_BLACK);
   } else {
     tft->setTextColor(TFT_DARKGREY, TFT_BLACK);
@@ -318,51 +327,7 @@ void update_volume_display(TFT_eSPI *tft, float volume, float prev_volume, bool 
 
   // Add exclamation mark for error if needed
   if (!volume_ok && volume != -999.0f) {
-    draw_exclamation_mark(tft, tft->width()/2 + 40, y, 64);
-  }
-  
-  // Draw volume bar always when the big number updates
-  if (volume != -999.0f) {
-    int bar_width = tft->width() - 40;
-    int bar_height = 8;
-    int bar_x = 20; 
-    int bar_y = tft->height() - 8;
-    
-    // Clear the bar area before drawing
-    tft->fillRect(bar_x, bar_y, bar_width, bar_height, TFT_BLACK);
-    // Draw bar outline
-    tft->drawRect(bar_x, bar_y, bar_width, bar_height, TFT_WHITE);
-    
-    // Calculate filled portion (volume range from -60 to 0, scale to bar width)
-    int fill_width = 0;
-    if (volume >= -60 && volume <= 0) {
-      fill_width = static_cast<int>((volume + 60) / 60.0f * bar_width);
-    }
-    
-    if (fill_width > 0) {
-      uint16_t fill_color = volume_ok ? TFT_YELLOW : TFT_DARKGREY;
-      tft->fillRect(bar_x, bar_y, fill_width, bar_height, fill_color);
-    }
-  }
-
-  // Draw volume bar always when the big number updates
-  if (volume != -999.0f) {
-    int bar_width = tft->width() - 40;
-    int bar_height = 8;
-    int bar_x = 20;
-    int bar_y = tft->height() - 8;
-
-    // Clear the bar area before drawing
-    tft->fillRect(bar_x, bar_y, bar_width, bar_height, TFT_BLACK);
-    // Draw bar outline
-    tft->drawRect(bar_x, bar_y, bar_width, bar_height, TFT_WHITE);
-
-    // Calculate filled portion (volume is 0-120, ensure float math)
-    int fill_width = static_cast<int>((static_cast<float>(volume) / 120.0f) * static_cast<float>(bar_width));
-    if (fill_width > 0) {
-      uint16_t fill_color = volume_ok ? TFT_YELLOW : TFT_DARKGREY;
-      tft->fillRect(bar_x, bar_y, fill_width, bar_height, fill_color);
-    }
+    tft->drawString("!", tft->width()/2 + tft->textWidth(buf, 8), y);
   }
 }
 
