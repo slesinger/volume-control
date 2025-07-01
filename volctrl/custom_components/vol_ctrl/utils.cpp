@@ -1,10 +1,13 @@
 #include "utils.h"
+#include "esphome/core/log.h"
 #include <cstring>
 #include <time.h>
 
 namespace esphome {
 namespace vol_ctrl {
 namespace utils {
+
+static const char *const TAG = "vol_ctrl.utils";
 
 bool extract_json_value(const std::string &json, const std::string &key, std::string &value) {
   size_t key_pos = json.find("\"" + key + "\":");
@@ -40,44 +43,84 @@ bool extract_json_value(const std::string &json, const std::string &key, std::st
 }
 
 bool check_json_boolean(const std::string &response, const std::string &key, bool &result) {
-  // Look for the key followed by true or false
-  size_t pos = response.find(key);
-  if (pos == std::string::npos) return false;
+  ESP_LOGD(TAG, "Checking for boolean key '%s' in JSON: %s", key.c_str(), response.c_str());
+  // Look for the key with proper JSON format
+  std::string key_pattern = "\"" + key + "\":";
+  size_t pos = response.find(key_pattern);
+  if (pos == std::string::npos) {
+    ESP_LOGW(TAG, "Key '%s' not found in JSON response", key.c_str());
+    return false;
+  }
   
-  // Look for true or false after the key
-  size_t true_pos = response.find("true", pos);
-  size_t false_pos = response.find("false", pos);
+  // Move position to after the key and colon
+  pos += key_pattern.length();
   
-  if (true_pos != std::string::npos && (false_pos == std::string::npos || true_pos < false_pos)) {
+  // Skip any whitespace
+  while (pos < response.length() && (response[pos] == ' ' || response[pos] == '\t' || 
+         response[pos] == '\n' || response[pos] == '\r')) {
+    pos++;
+  }
+  
+  // Check if we have enough characters left
+  if (pos + 4 >= response.length()) {
+    ESP_LOGW(TAG, "Not enough characters after key '%s'", key.c_str());
+    return false;
+  }
+  
+  // Check for "true" or "false" specifically at this position
+  if (response.compare(pos, 4, "true") == 0) {
     result = true;
+    ESP_LOGD(TAG, "Found value 'true' for key '%s'", key.c_str());
     return true;
-  } else if (false_pos != std::string::npos) {
+  } else if (response.compare(pos, 5, "false") == 0) {
     result = false;
+    ESP_LOGD(TAG, "Found value 'false' for key '%s'", key.c_str());
     return true;
   }
+  
+  ESP_LOGW(TAG, "Value for key '%s' is neither 'true' nor 'false'", key.c_str());
+  return false;
   
   return false;
 }
 
 bool extract_json_number(const std::string &response, const std::string &key, float &result) {
+  ESP_LOGD(TAG, "Extracting '%s' from JSON: %s", key.c_str(), response.c_str());
   size_t pos = response.find("\"" + key + "\":");
-  if (pos == std::string::npos) return false;
+  if (pos == std::string::npos) {
+    ESP_LOGE(TAG, "Key '%s' not found in response", key.c_str());
+    return false;
+  }
   
   pos += key.length() + 3; // Skip past "key":
   size_t end_pos = response.find_first_of(",}", pos);
-  if (end_pos == std::string::npos) return false;
+  if (end_pos == std::string::npos) {
+    ESP_LOGE(TAG, "End of value for '%s' not found", key.c_str());
+    return false;
+  }
   
   std::string value = response.substr(pos, end_pos - pos);
+  ESP_LOGD(TAG, "Raw extracted value for '%s': '%s'", key.c_str(), value.c_str());
+  
   // Remove whitespace
   size_t first = value.find_first_not_of(" \t\n\r");
   size_t last = value.find_last_not_of(" \t\n\r");
-  if (first == std::string::npos || last == std::string::npos) return false;
+  if (first == std::string::npos || last == std::string::npos) {
+    ESP_LOGE(TAG, "Value for '%s' contains only whitespace", key.c_str());
+    return false;
+  }
   
   value = value.substr(first, last - first + 1);
+  ESP_LOGD(TAG, "Trimmed value for '%s': '%s'", key.c_str(), value.c_str());
+  
   char* endptr = nullptr;
   result = std::strtof(value.c_str(), &endptr);
-  if (endptr == value.c_str() || *endptr != '\0') return false;
+  if (endptr == value.c_str() || *endptr != '\0') {
+    ESP_LOGE(TAG, "Failed to convert '%s' to float", value.c_str());
+    return false;
+  }
   
+  ESP_LOGD(TAG, "Successfully extracted %s = %.2f", key.c_str(), result);
   return true;
 }
 

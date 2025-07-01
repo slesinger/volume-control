@@ -94,6 +94,9 @@ class VolCtrl : public Component, public spi::SPIDevice<spi::BIT_ORDER_MSB_FIRST
   uint32_t last_volume_change_{0}; // Timestamp of last volume change to rate limit
   bool user_adjusting_volume_{false}; // Flag to indicate user is actively changing volume
   bool volume_initialized_{false}; // Flag to indicate if we've read initial volume from speakers
+  
+  // Accumulator for pending encoder changes during rate limiting
+  int pending_encoder_changes_{0};
 };
 
 }  // namespace vol_ctrl

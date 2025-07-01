@@ -38,6 +38,8 @@ void VolCtrl::setup() {
   last_menu_toggle_ = now;
   display_active_ = true;
   volume_initialized_ = false;  // Volume needs to be read from speakers first
+  pending_encoder_changes_ = 0;  // No pending encoder changes initially
+  pending_encoder_changes_ = 0;  // No pending encoder changes initially
   
   // Log the initial values
   ESP_LOGI(TAG, "Initial setup - volume_prev_: %.1f, volume_initialized_: %d", this->volume_prev_, this->volume_initialized_);
@@ -182,6 +184,20 @@ void VolCtrl::loop() {
   int standby_time = this->standby_time_prev_;
   int active_device_count = 0;
   bool volume_ok = false;
+  
+  // Check if there are pending encoder changes and the rate limit period has expired
+  if (this->pending_encoder_changes_ != 0 && now - this->last_volume_change_ >= 1000 && volume_initialized_ && !in_menu_) {
+    ESP_LOGI(TAG, "Processing accumulated encoder changes: %d", this->pending_encoder_changes_);
+    int diff = this->pending_encoder_changes_;
+    this->pending_encoder_changes_ = 0;  // Reset accumulator
+    
+    // Re-process the accumulated changes
+    if (diff > 0) {
+      volume_increase();
+    } else if (diff < 0) {
+      volume_decrease();
+    }
+  }
   
   // Get reference to device states
   const auto& device_states = network::get_device_states();
@@ -399,7 +415,9 @@ void VolCtrl::volume_increase() {
   const auto &states = network::get_device_states();
   float current_volume = 0.0f;
   bool found_active_device = false;
+  bool found_standby_device = false;
   std::string active_device_ip;
+  std::string standby_device_ip;
   
   // First try to get a fresh volume reading directly from an active device
   for (const auto &entry : states) {
@@ -430,10 +448,24 @@ void VolCtrl::volume_increase() {
     }
   }
   
-  // Only use cached value if no active device found
+  // If no active device, check standby devices
   if (!found_active_device) {
+    for (const auto &entry : states) {
+      if (entry.second.status == UP && entry.second.standby) {
+        standby_device_ip = entry.first;
+        current_volume = entry.second.volume;
+        found_standby_device = true;
+        ESP_LOGI(TAG, "Using standby device state volume for increase: %.1f (cached: %.1f)", 
+               entry.second.volume, volume_prev_);
+        break;
+      }
+    }
+  }
+  
+  // Only use cached value if no devices found at all
+  if (!found_active_device && !found_standby_device) {
     current_volume = this->volume_prev_;
-    ESP_LOGD(TAG, "No active device found for volume increase, using cached: %.1f", current_volume);
+    ESP_LOGD(TAG, "No active or standby devices found for volume increase, using cached: %.1f", current_volume);
   }
   
   // Calculate new volume
@@ -451,23 +483,57 @@ void VolCtrl::volume_increase() {
   // Check if enough time has passed since last change (rate limiting to 1 second)
   if (now - this->last_volume_change_ < 1000) {
     // Too soon to send command, just update display
+    ESP_LOGW(TAG, "Rate limiting in effect - last update was %ums ago, waiting until 1000ms passes", 
+            now - this->last_volume_change_);
     return;
   }
   
   // Time to send command to the speaker
   this->last_volume_change_ = now;
   
+  // Try to wake up standby devices if needed
+  if (!found_active_device && found_standby_device) {
+    ESP_LOGI(TAG, "No active devices found, attempting to wake up standby devices");
+    
+    // Try to wake standby devices first by sending standby=false
+    for (const auto &entry : states) {
+      const std::string &ipv6 = entry.first;
+      const DeviceState &state = entry.second;
+      
+      // Only attempt to wake up devices that are in standby
+      if (state.status == UP && state.standby) {
+        std::string wakeup_command = "{\"device\":{\"standby\":{\"enabled\":false}}}";
+        std::string response;
+        ESP_LOGI(TAG, "Sending wake up command to %s: %s", ipv6.c_str(), wakeup_command.c_str());
+        if (network::send_ssc_command(ipv6, wakeup_command, response)) {
+          ESP_LOGI(TAG, "Successfully sent wake up command to device %s, response: %s", 
+                  ipv6.c_str(), response.c_str());
+                  
+          // Delay a bit to allow the device to wake up before sending volume command
+          esphome::delay(200);
+        } else {
+          ESP_LOGE(TAG, "Failed to send wake up command to device %s", ipv6.c_str());
+        }
+      }
+    }
+  }
+  
   // Iterate through all devices and increase volume
+  int updated_devices = 0;
   for (const auto &entry : states) {
     const std::string &ipv6 = entry.first;
     const DeviceState &state = entry.second;
     
-    // Only attempt to control devices that are up
-    if (state.status == UP && !state.standby) {
+    // Try to control all UP devices, including standby ones
+    if (state.status == UP) {
       std::string command = "{\"audio\":{\"out\":{\"level\":" + std::to_string(new_volume) + "}}}";
       std::string response;
+      ESP_LOGI(TAG, "Sending volume command to %s: %s (standby=%d)", 
+              ipv6.c_str(), command.c_str(), state.standby);
+              
       if (network::send_ssc_command(ipv6, command, response)) {
         ESP_LOGI(TAG, "Successfully set volume to %.1f for device %s", new_volume, ipv6.c_str());
+        updated_devices++;
         // Don't reset user_adjusting_volume_ flag here
         // It will be reset only when we get an actual volume reading from the device
       } else {
@@ -475,6 +541,9 @@ void VolCtrl::volume_increase() {
       }
     }
   }
+  
+  ESP_LOGI(TAG, "Volume change complete - updated %d devices with new volume %.1f", 
+          updated_devices, new_volume);
 }
 
 void VolCtrl::volume_decrease() {
@@ -494,7 +563,9 @@ void VolCtrl::volume_decrease() {
   const auto &states = network::get_device_states();
   float current_volume = 0.0f;
   bool found_active_device = false;
+  bool found_standby_device = false;
   std::string active_device_ip;
+  std::string standby_device_ip;
   
   // First try to get a fresh volume reading directly from an active device
   for (const auto &entry : states) {
@@ -525,10 +596,24 @@ void VolCtrl::volume_decrease() {
     }
   }
   
-  // Only use cached value if no active device found
+  // If no active device, check standby devices
   if (!found_active_device) {
+    for (const auto &entry : states) {
+      if (entry.second.status == UP && entry.second.standby) {
+        standby_device_ip = entry.first;
+        current_volume = entry.second.volume;
+        found_standby_device = true;
+        ESP_LOGI(TAG, "Using standby device state volume for decrease: %.1f (cached: %.1f)", 
+               entry.second.volume, volume_prev_);
+        break;
+      }
+    }
+  }
+  
+  // Only use cached value if no devices found at all
+  if (!found_active_device && !found_standby_device) {
     current_volume = this->volume_prev_;
-    ESP_LOGD(TAG, "No active device found for volume decrease, using cached: %.1f", current_volume);
+    ESP_LOGD(TAG, "No active or standby devices found for volume decrease, using cached: %.1f", current_volume);
   }
   
   // Calculate new volume
@@ -546,23 +631,57 @@ void VolCtrl::volume_decrease() {
   // Check if enough time has passed since last change (rate limiting to 1 second)
   if (now - this->last_volume_change_ < 1000) {
     // Too soon to send command, just update display
+    ESP_LOGW(TAG, "Rate limiting in effect - last update was %ums ago, waiting until 1000ms passes", 
+            now - this->last_volume_change_);
     return;
   }
   
   // Time to send command to the speaker
   this->last_volume_change_ = now;
   
+  // Try to wake up standby devices if needed
+  if (!found_active_device && found_standby_device) {
+    ESP_LOGI(TAG, "No active devices found, attempting to wake up standby devices");
+    
+    // Try to wake standby devices first by sending standby=false
+    for (const auto &entry : states) {
+      const std::string &ipv6 = entry.first;
+      const DeviceState &state = entry.second;
+      
+      // Only attempt to wake up devices that are in standby
+      if (state.status == UP && state.standby) {
+        std::string wakeup_command = "{\"device\":{\"standby\":{\"enabled\":false}}}";
+        std::string response;
+        ESP_LOGI(TAG, "Sending wake up command to %s: %s", ipv6.c_str(), wakeup_command.c_str());
+        if (network::send_ssc_command(ipv6, wakeup_command, response)) {
+          ESP_LOGI(TAG, "Successfully sent wake up command to device %s, response: %s", 
+                  ipv6.c_str(), response.c_str());
+                  
+          // Delay a bit to allow the device to wake up before sending volume command
+          esphome::delay(200);
+        } else {
+          ESP_LOGE(TAG, "Failed to send wake up command to device %s", ipv6.c_str());
+        }
+      }
+    }
+  }
+  
   // Iterate through all devices and decrease volume
+  int updated_devices = 0;
   for (const auto &entry : states) {
     const std::string &ipv6 = entry.first;
     const DeviceState &state = entry.second;
     
-    // Only attempt to control devices that are up
-    if (state.status == UP && !state.standby) {
+    // Try to control all UP devices, including standby ones
+    if (state.status == UP) {
       std::string command = "{\"audio\":{\"out\":{\"level\":" + std::to_string(new_volume) + "}}}";
       std::string response;
+      ESP_LOGI(TAG, "Sending volume command to %s: %s (standby=%d)", 
+              ipv6.c_str(), command.c_str(), state.standby);
+              
       if (network::send_ssc_command(ipv6, command, response)) {
         ESP_LOGI(TAG, "Successfully set volume to %.1f for device %s", new_volume, ipv6.c_str());
+        updated_devices++;
         // Don't reset user_adjusting_volume_ flag here
         // It will be reset only when we get an actual volume reading from the device
       } else {
@@ -570,6 +689,9 @@ void VolCtrl::volume_decrease() {
       }
     }
   }
+  
+  ESP_LOGI(TAG, "Volume change complete - updated %d devices with new volume %.1f", 
+          updated_devices, new_volume);
 }
 
 void VolCtrl::toggle_mute() {
@@ -808,7 +930,8 @@ void VolCtrl::menu_select() {
 }
 
 void VolCtrl::dump_config() {
-  ESP_LOGCONFIG(TAG, "Volume Control component configured.");
+  ESP_LOGCONFIG(TAG, "Volume Control:");
+  ESP_LOGCONFIG(TAG, "  Volume step: %.1f dB", volume_step_);
 }
 
 void VolCtrl::set_volume(float level) {
@@ -922,20 +1045,33 @@ void VolCtrl::process_encoder_change(int diff) {
     return;
   }
   
+  // Accumulate encoder changes
+  this->pending_encoder_changes_ += diff;
+  ESP_LOGI(TAG, "Accumulated encoder changes: %d", this->pending_encoder_changes_);
+  
   // Always start with real volume from devices, never use cached value for initial calculation
   float current_volume = 0.0f;
   bool found_active_device = false;
+  bool found_standby_device = false;
+  std::string standby_device_ip;
   const auto &states = network::get_device_states();
   
   // Debug: Log all device states
   ESP_LOGI(TAG, "Processing encoder change - devices state check:");
   int device_count = 0;
+  int active_count = 0;
+  int standby_count = 0;
   std::string active_device_ip;
   for (const auto &entry : states) {
     device_count++;
+    bool is_up = (entry.second.status == UP);
+    bool is_standby = entry.second.standby;
+    
+    if (is_up && !is_standby) active_count++;
+    if (is_up && is_standby) standby_count++;
+    
     ESP_LOGI(TAG, "  Device %d: %s, UP=%d, standby=%d, volume=%.1f", 
-             device_count, entry.first.c_str(), 
-             (entry.second.status == UP), entry.second.standby, entry.second.volume);
+             device_count, entry.first.c_str(), is_up, is_standby, entry.second.volume);
   }
   
   // First pass: Try to get real volume from active device
@@ -971,10 +1107,31 @@ void VolCtrl::process_encoder_change(int diff) {
     }
   }
   
-  // Use cached value only if no active device was found
+  // Second pass: If no active device found, try standby devices
   if (!found_active_device) {
+    for (const auto &entry : states) {
+      if (entry.second.status == UP && entry.second.standby) {
+        standby_device_ip = entry.first;
+        
+        // Use the device state volume if device is in standby
+        current_volume = entry.second.volume;
+        ESP_LOGI(TAG, "Using standby device state volume: %.1f (cached: %.1f)", 
+                 entry.second.volume, volume_prev_);
+        found_standby_device = true;
+        
+        // Log detailed information
+        ESP_LOGI(TAG, "Found standby device: %s, volume=%.1f, cached=%.1f", 
+                 entry.first.c_str(), entry.second.volume, volume_prev_);
+        
+        break;
+      }
+    }
+  }
+  
+  // Use cached value only if no devices found at all
+  if (!found_active_device && !found_standby_device) {
     current_volume = this->volume_prev_;
-    ESP_LOGW(TAG, "No active device found, using cached volume: %.1f", current_volume);
+    ESP_LOGW(TAG, "No active or standby devices found, using cached volume: %.1f", current_volume);
   }
   
   // Calculate new volume based on encoder direction
@@ -1002,8 +1159,8 @@ void VolCtrl::process_encoder_change(int diff) {
       const std::string &ipv6 = entry.first;
       const DeviceState &state = entry.second;
       
-      // Only attempt to control devices that are up
-      if (state.status == UP && !state.standby) {
+      // Only attempt to control devices that are up - including standby devices
+      if (state.status == UP) {
         std::string response;
         if (network::send_ssc_command(ipv6, command, response)) {
           ESP_LOGI(TAG, "Muted device %s due to volume change", ipv6.c_str());
@@ -1015,28 +1172,75 @@ void VolCtrl::process_encoder_change(int diff) {
   // Check if enough time has passed since last change (rate limiting to 1 second)
   if (now - this->last_volume_change_ < 1000) {
     // Too soon to send command, just update display
+    ESP_LOGW(TAG, "Rate limiting in effect - last update was %ums ago, waiting until 1000ms passes", 
+            now - this->last_volume_change_);
     return;
   }
+  
+  // Reset the accumulated changes since we're applying them now
+  this->pending_encoder_changes_ = 0;
   
   // Time to send command to the speaker
   this->last_volume_change_ = now;
   
-  // Apply to all active devices
+  // Log before sending commands
+  ESP_LOGI(TAG, "About to apply volume changes, active_devices=%d, standby_devices=%d", 
+          active_count, standby_count);
+  
+  // First step: Try to exit standby mode if needed
+  if (active_count == 0 && standby_count > 0) {
+    ESP_LOGI(TAG, "No active devices found, attempting to wake up standby devices");
+    
+    // Try to wake standby devices first by sending standby=false
+    for (const auto &entry : states) {
+      const std::string &ipv6 = entry.first;
+      const DeviceState &state = entry.second;
+      
+      // Only attempt to wake up devices that are in standby
+      if (state.status == UP && state.standby) {
+        std::string wakeup_command = "{\"device\":{\"standby\":{\"enabled\":false}}}";
+        std::string response;
+        ESP_LOGI(TAG, "Sending wake up command to %s: %s", ipv6.c_str(), wakeup_command.c_str());
+        if (network::send_ssc_command(ipv6, wakeup_command, response)) {
+          ESP_LOGI(TAG, "Successfully sent wake up command to device %s, response: %s", 
+                  ipv6.c_str(), response.c_str());
+                  
+          // Delay a bit to allow the device to wake up before sending volume command
+          esphome::delay(200);
+        } else {
+          ESP_LOGE(TAG, "Failed to send wake up command to device %s", ipv6.c_str());
+        }
+      }
+    }
+  }
+  
+  // Apply to all devices (both active and standby)
+  int updated_devices = 0;
   for (const auto &entry : states) {
     const std::string &ipv6 = entry.first;
     const DeviceState &state = entry.second;
     
-    // Only attempt to control devices that are up
-    if (state.status == UP && !state.standby) {
+    // Only attempt to control devices that are up (including standby ones)
+    if (state.status == UP) {
       std::string command = "{\"audio\":{\"out\":{\"level\":" + std::to_string(new_volume) + "}}}";
       std::string response;
+      ESP_LOGI(TAG, "Sending volume command to %s: %s (standby=%d)", 
+              ipv6.c_str(), command.c_str(), state.standby);
+              
       if (network::send_ssc_command(ipv6, command, response)) {
-        ESP_LOGI(TAG, "Successfully set volume to %.1f for device %s", new_volume, ipv6.c_str());
+        ESP_LOGI(TAG, "Successfully set volume to %.1f for device %s, response: %s", 
+                new_volume, ipv6.c_str(), response.c_str());
+        updated_devices++;
       } else {
-        ESP_LOGE(TAG, "Failed to set volume for device %s", ipv6.c_str());
+        ESP_LOGE(TAG, "Failed to set volume for device %s - network error", ipv6.c_str());
       }
+    } else {
+      ESP_LOGI(TAG, "Skipping device %s: not UP", ipv6.c_str());
     }
   }
+  
+  ESP_LOGI(TAG, "Volume change complete - updated %d devices with new volume %.1f", 
+          updated_devices, new_volume);
 }
 
 }  // namespace vol_ctrl
