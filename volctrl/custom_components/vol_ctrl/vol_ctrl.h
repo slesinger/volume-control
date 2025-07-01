@@ -43,6 +43,9 @@ class VolCtrl : public Component, public spi::SPIDevice<spi::BIT_ORDER_MSB_FIRST
   
   // Direct volume setting for Home Assistant
   void set_volume(float level);
+  
+  // Process encoder changes by directly querying speakers for current volume
+  void process_encoder_change(int diff);
 
   // Helper for HA services
   const std::map<std::string, DeviceState>& get_device_states() {
@@ -90,6 +93,7 @@ class VolCtrl : public Component, public spi::SPIDevice<spi::BIT_ORDER_MSB_FIRST
   // Rate limiting for volume changes
   uint32_t last_volume_change_{0}; // Timestamp of last volume change to rate limit
   bool user_adjusting_volume_{false}; // Flag to indicate user is actively changing volume
+  bool volume_initialized_{false}; // Flag to indicate if we've read initial volume from speakers
 };
 
 }  // namespace vol_ctrl

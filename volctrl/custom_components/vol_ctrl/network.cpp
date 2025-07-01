@@ -145,7 +145,12 @@ bool get_device_volume(const std::string &ipv6, float &volume) {
   bool success = send_ssc_command(ipv6, "{\"audio\":{\"out\":{\"level\":null}}}", response);
   
   if (success) {
-    return utils::extract_json_number(response, "level", volume);
+    if (utils::extract_json_number(response, "level", volume)) {
+      // Update the device state with the new volume value
+      device_states[ipv6].volume = volume;
+      ESP_LOGD(TAG, "Updated device_states[%s].volume to %.1f", ipv6.c_str(), volume);
+      return true;
+    }
   }
   return false;
 }

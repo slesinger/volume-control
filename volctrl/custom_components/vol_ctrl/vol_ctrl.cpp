@@ -37,6 +37,10 @@ void VolCtrl::setup() {
   last_interaction_ = now;
   last_menu_toggle_ = now;
   display_active_ = true;
+  volume_initialized_ = false;  // Volume needs to be read from speakers first
+  
+  // Log the initial values
+  ESP_LOGI(TAG, "Initial setup - volume_prev_: %.1f, volume_initialized_: %d", this->volume_prev_, this->volume_initialized_);
   
   // Add a small delay to let things settle
   esphome::delay(500);
@@ -202,12 +206,31 @@ void VolCtrl::loop() {
       if (entry.second.status == UP) {
         float new_volume = 0.0f;
         if (network::get_device_volume(ipv6, new_volume)) {
+          ESP_LOGI(TAG, "Volume read from device %s: %.1f (current cached: %.1f, device state: %.1f)", 
+                   ipv6.c_str(), new_volume, this->volume_prev_, entry.second.volume);
+          
           if (this->volume_prev_ != new_volume) need_redraw = true;
           volume = new_volume;
           volume_ok = true;
-          // Only here, when we get a real volume reading from the device, we can reset the user_adjusting_volume_ flag
-          // This ensures the volume stays blue until we get confirmation from the speakers
-          this->user_adjusting_volume_ = false;
+          
+          // Mark that we've initialized the volume from the speakers
+          if (!this->volume_initialized_) {
+            ESP_LOGI(TAG, "Initial volume from speakers: %.1f (prev cached: %.1f)", new_volume, this->volume_prev_);
+            this->volume_initialized_ = true;
+            // Force display update when we first get volume from speakers
+            need_redraw = true;
+            // Always ensure volume_prev_ is updated with the actual speaker volume on initialization
+            this->volume_prev_ = new_volume;
+            ESP_LOGI(TAG, "Updated cached volume to match speaker: %.1f", this->volume_prev_);
+          }
+               // Only here, when we get a real volume reading from the device, we can reset the user_adjusting_volume_ flag
+      // This ensures the volume stays blue until we get confirmation from the speakers
+      if (this->user_adjusting_volume_) {
+        // When we get a reading from speakers while user is adjusting, always turn display to yellow
+        this->user_adjusting_volume_ = false;
+        need_redraw = true;
+        ESP_LOGD(TAG, "Volume confirmed by speakers (%.1f), turning display to normal color", new_volume);
+          }
         } else {
           volume = this->volume_prev_;
           volume_ok = false;
@@ -311,7 +334,9 @@ void VolCtrl::loop() {
         esphome::vol_ctrl::display::update_standby_time(this->tft_, standby_time, this->standby_time_prev_);
       }
       
-      if (volume != this->volume_prev_ || this->user_adjusting_volume_) {
+      // Check if we need to update the volume display
+      // Note: We force an update if user_adjusting_volume_ was just reset to false in the device check block above
+      if (volume != this->volume_prev_ || this->user_adjusting_volume_ || need_redraw) {
         // Only reset the user_adjusting_volume_ flag if we got a genuine reading from the device
         // This ensures the color stays blue until confirmed by the speakers
         if (volume_ok && volume != this->volume_prev_) {
@@ -372,14 +397,43 @@ void VolCtrl::volume_increase() {
   
   // Get current device states to determine current volume
   const auto &states = network::get_device_states();
-  float current_volume = this->volume_prev_;
+  float current_volume = 0.0f;
+  bool found_active_device = false;
+  std::string active_device_ip;
   
-  // Find an active device to get current volume
+  // First try to get a fresh volume reading directly from an active device
   for (const auto &entry : states) {
     if (entry.second.status == UP && !entry.second.standby) {
+      active_device_ip = entry.first;
+      
+      // Try to get fresh volume reading
+      float fresh_volume = 0.0f;
+      if (network::get_device_volume(entry.first, fresh_volume)) {
+        current_volume = fresh_volume;
+        ESP_LOGI(TAG, "Got fresh volume reading for increase: %.1f (prev cached: %.1f, device state: %.1f)", 
+                 fresh_volume, volume_prev_, entry.second.volume);
+        found_active_device = true;
+        break;
+      }
+      
+      // If we can't get fresh reading, use device state
       current_volume = entry.second.volume;
+      found_active_device = true;
+      ESP_LOGI(TAG, "Using device state volume for increase: %.1f (cached: %.1f)", 
+               entry.second.volume, volume_prev_);
+      
+      // Log any discrepancy
+      if (abs(current_volume - volume_prev_) > 0.1f) {
+        ESP_LOGW(TAG, "Volume increase - discrepancy: device=%.1f, cached=%.1f", current_volume, volume_prev_);
+      }
       break;
     }
+  }
+  
+  // Only use cached value if no active device found
+  if (!found_active_device) {
+    current_volume = this->volume_prev_;
+    ESP_LOGD(TAG, "No active device found for volume increase, using cached: %.1f", current_volume);
   }
   
   // Calculate new volume
@@ -438,14 +492,43 @@ void VolCtrl::volume_decrease() {
   
   // Get current device states to determine current volume
   const auto &states = network::get_device_states();
-  float current_volume = this->volume_prev_;
+  float current_volume = 0.0f;
+  bool found_active_device = false;
+  std::string active_device_ip;
   
-  // Find an active device to get current volume
+  // First try to get a fresh volume reading directly from an active device
   for (const auto &entry : states) {
     if (entry.second.status == UP && !entry.second.standby) {
+      active_device_ip = entry.first;
+      
+      // Try to get fresh volume reading
+      float fresh_volume = 0.0f;
+      if (network::get_device_volume(entry.first, fresh_volume)) {
+        current_volume = fresh_volume;
+        ESP_LOGI(TAG, "Got fresh volume reading for decrease: %.1f (prev cached: %.1f, device state: %.1f)", 
+                 fresh_volume, volume_prev_, entry.second.volume);
+        found_active_device = true;
+        break;
+      }
+      
+      // If we can't get fresh reading, use device state
       current_volume = entry.second.volume;
+      found_active_device = true;
+      ESP_LOGI(TAG, "Using device state volume for decrease: %.1f (cached: %.1f)", 
+               entry.second.volume, volume_prev_);
+      
+      // Log any discrepancy
+      if (abs(current_volume - volume_prev_) > 0.1f) {
+        ESP_LOGW(TAG, "Volume decrease - discrepancy: device=%.1f, cached=%.1f", current_volume, volume_prev_);
+      }
       break;
     }
+  }
+  
+  // Only use cached value if no active device found
+  if (!found_active_device) {
+    current_volume = this->volume_prev_;
+    ESP_LOGD(TAG, "No active device found for volume decrease, using cached: %.1f", current_volume);
   }
   
   // Calculate new volume
@@ -809,6 +892,146 @@ void VolCtrl::set_volume(float level) {
         ESP_LOGI(TAG, "Successfully set volume to %.1f for device %s", level, ipv6.c_str());
         // Don't reset user_adjusting_volume_ flag here
         // It will be reset only when we get an actual volume reading from the device
+      } else {
+        ESP_LOGE(TAG, "Failed to set volume for device %s", ipv6.c_str());
+      }
+    }
+  }
+}
+
+void VolCtrl::process_encoder_change(int diff) {
+  // Only process if not in menu mode
+  if (in_menu_) {
+    // If in menu, use for menu navigation
+    if (diff > 0) {
+      menu_down();  // Moving down in menu
+    } else if (diff < 0) {
+      menu_up();    // Moving up in menu
+    }
+    return;
+  }
+  
+  ESP_LOGI(TAG, "Encoder change detected: diff=%d, volume_prev_=%.1f", diff, this->volume_prev_);
+  
+  // Get current time
+  uint32_t now = millis();
+  
+  // If we haven't successfully read a volume from speakers yet, ignore encoder changes
+  if (!volume_initialized_) {
+    ESP_LOGW(TAG, "Ignoring encoder change - haven't read initial volume from speakers yet");
+    return;
+  }
+  
+  // Always start with real volume from devices, never use cached value for initial calculation
+  float current_volume = 0.0f;
+  bool found_active_device = false;
+  const auto &states = network::get_device_states();
+  
+  // Debug: Log all device states
+  ESP_LOGI(TAG, "Processing encoder change - devices state check:");
+  int device_count = 0;
+  std::string active_device_ip;
+  for (const auto &entry : states) {
+    device_count++;
+    ESP_LOGI(TAG, "  Device %d: %s, UP=%d, standby=%d, volume=%.1f", 
+             device_count, entry.first.c_str(), 
+             (entry.second.status == UP), entry.second.standby, entry.second.volume);
+  }
+  
+  // First pass: Try to get real volume from active device
+  for (const auto &entry : states) {
+    if (entry.second.status == UP && !entry.second.standby) {
+      active_device_ip = entry.first;
+      
+      // Try to get fresh volume reading directly from the device
+      float fresh_volume = 0.0f;
+      if (network::get_device_volume(entry.first, fresh_volume)) {
+        current_volume = fresh_volume;
+        ESP_LOGI(TAG, "Got fresh volume reading: %.1f (prev cached: %.1f, device state: %.1f)", 
+                 fresh_volume, volume_prev_, entry.second.volume);
+        found_active_device = true;
+        break;
+      }
+      
+      // If we can't get a fresh reading, use the device state volume
+      current_volume = entry.second.volume;
+      ESP_LOGI(TAG, "Using device state volume: %.1f (prev cached: %.1f)", 
+               entry.second.volume, volume_prev_);
+      found_active_device = true;
+      
+      // Log detailed information
+      ESP_LOGI(TAG, "Found active device: %s, volume=%.1f, cached=%.1f", 
+               entry.first.c_str(), entry.second.volume, volume_prev_);
+      
+      // Log to debug any discrepancy between device volume and cached volume
+      if (abs(current_volume - volume_prev_) > 0.1f) {
+        ESP_LOGW(TAG, "Volume discrepancy: device=%.1f, cached=%.1f", current_volume, volume_prev_);
+      }
+      break;
+    }
+  }
+  
+  // Use cached value only if no active device was found
+  if (!found_active_device) {
+    current_volume = this->volume_prev_;
+    ESP_LOGW(TAG, "No active device found, using cached volume: %.1f", current_volume);
+  }
+  
+  // Calculate new volume based on encoder direction
+  float new_volume = current_volume;
+  if (diff > 0) {
+    new_volume = current_volume + this->volume_step_;
+    if (new_volume > 120.0f) new_volume = 120.0f;
+    ESP_LOGI(TAG, "Increasing volume: %.1f -> %.1f", current_volume, new_volume);
+  } else if (diff < 0) {
+    new_volume = current_volume - this->volume_step_;
+    if (new_volume < 0.0f) new_volume = 0.0f;
+    ESP_LOGI(TAG, "Decreasing volume: %.1f -> %.1f", current_volume, new_volume);
+  }
+  
+  // Update display and cache
+  this->user_adjusting_volume_ = true;
+  esphome::vol_ctrl::display::update_volume_display(this->tft_, new_volume, current_volume, true, true, true);
+  this->volume_prev_ = new_volume;
+  
+  // If the volume becomes zero, mute the speakers
+  if (new_volume < 0.1f) {
+    ESP_LOGI(TAG, "Volume is zero, muting speakers");
+    std::string command = "{\"audio\":{\"out\":{\"mute\":true}}}";
+    for (const auto &entry : states) {
+      const std::string &ipv6 = entry.first;
+      const DeviceState &state = entry.second;
+      
+      // Only attempt to control devices that are up
+      if (state.status == UP && !state.standby) {
+        std::string response;
+        if (network::send_ssc_command(ipv6, command, response)) {
+          ESP_LOGI(TAG, "Muted device %s due to volume change", ipv6.c_str());
+        }
+      }
+    }
+  }
+  
+  // Check if enough time has passed since last change (rate limiting to 1 second)
+  if (now - this->last_volume_change_ < 1000) {
+    // Too soon to send command, just update display
+    return;
+  }
+  
+  // Time to send command to the speaker
+  this->last_volume_change_ = now;
+  
+  // Apply to all active devices
+  for (const auto &entry : states) {
+    const std::string &ipv6 = entry.first;
+    const DeviceState &state = entry.second;
+    
+    // Only attempt to control devices that are up
+    if (state.status == UP && !state.standby) {
+      std::string command = "{\"audio\":{\"out\":{\"level\":" + std::to_string(new_volume) + "}}}";
+      std::string response;
+      if (network::send_ssc_command(ipv6, command, response)) {
+        ESP_LOGI(TAG, "Successfully set volume to %.1f for device %s", new_volume, ipv6.c_str());
       } else {
         ESP_LOGE(TAG, "Failed to set volume for device %s", ipv6.c_str());
       }

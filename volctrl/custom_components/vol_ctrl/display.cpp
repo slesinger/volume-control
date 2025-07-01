@@ -293,6 +293,11 @@ void update_volume_display(TFT_eSPI *tft, float volume, float prev_volume, bool 
 }
 
 void update_volume_display(TFT_eSPI *tft, float volume, float prev_volume, bool volume_ok, bool prev_volume_ok, bool user_adjusting) {
+  // We want to update if:
+  // 1. The volume value changed, OR
+  // 2. The volume_ok status changed, OR
+  // 3. The user_adjusting mode is active (we're using blue color)
+  // Note: never skip update when user_adjusting is true as we need to show blue color
   if (volume == prev_volume && volume_ok == prev_volume_ok && !user_adjusting) return; // No change
 
   // Clear previous volume display

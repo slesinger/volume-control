@@ -42,6 +42,11 @@ network:
     min_ipv6_addr_count: 2
 
 logger:
+  level: INFO
+  # Available levels: NONE, ERROR, WARN, INFO, DEBUG, VERBOSE
+  # Set to NONE to completely disable logging
+  # Set to ERROR for minimal logging
+  # Set to INFO for normal logging without debug messages
 
 psram:
 
@@ -106,14 +111,25 @@ sensor:
     id: volume_encoder
     pin_a: GPIO32
     pin_b: GPIO33
-    min_value: 0
-    max_value: 120
+    min_value: -200  # Allow for plenty of negative and positive movement
+    max_value: 200
     resolution: 1
     on_value:
       then:
         - lambda: |-
-            // Set volume directly from encoder value
-            id(my_vol_ctrl).set_volume(x);
+            static int last_value = 0;
+            
+            // Calculate relative change since last update
+            int diff = x - last_value;
+            
+            if (diff != 0) {  // Only process if there's actual movement
+              // Always explicitly request current volume from speakers through the vol_ctrl component
+              // This ensures we use the speaker's volume as the source of truth
+              id(my_vol_ctrl).process_encoder_change(diff);
+              
+              // Update our position tracking
+              last_value = x;
+            }
 
 binary_sensor:
   - platform: gpio
