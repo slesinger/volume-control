@@ -22,7 +22,7 @@ namespace esphome
             void update_datetime(TFT_eSPI *tft, const std::string &datetime);
             void update_standby_time(TFT_eSPI *tft, int standby_countdown);
             void update_volume_display(TFT_eSPI *tft, float volume, bool user_adjusting = false);
-            void update_mute_status(TFT_eSPI *tft, bool muted);
+            void update_mute_status(TFT_eSPI *tft, bool muted, float volume = -1.0f);
             void update_standby_status(TFT_eSPI *tft, bool standby, bool prev_standby);
             void update_status_message(TFT_eSPI *tft, const std::string &status);
 

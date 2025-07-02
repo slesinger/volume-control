@@ -137,17 +137,19 @@ void update_volume_display(TFT_eSPI *tft, float volume, bool user_adjusting) {
   tft->drawString(buf, tft->width()/2, y);
 }
 
-void update_mute_status(TFT_eSPI *tft, bool muted) {
-  if (!muted) 
-    return; // Avoid drawing mute sign if not muted  // TODO draw volume number instead
+void update_mute_status(TFT_eSPI *tft, bool muted, float volume) {
+  if (!muted) {
+    update_volume_display(tft, volume);
+    return; // Avoid drawing mute sign if not muted
+  }
   
   // Draw new mute icon if muted
   if (muted) {
     int x = tft->width()/2;
     int y = tft->height()/2 - 8;
-    int halfsize = 40;
-    int thickness = 4;
-    int radius = halfsize;
+    int halfsize = 44;
+    int thickness = 8;
+    int radius = halfsize+18;
     
     for (int i = -thickness/2; i <= thickness/2; ++i) {
       tft->drawLine(x-halfsize+i, y-halfsize-i, x+halfsize+i, y+halfsize-i, TFT_RED);

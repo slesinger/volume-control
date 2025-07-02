@@ -130,7 +130,7 @@ void VolCtrl::loop() {
       if (volume_changed && last_state)
         esphome::vol_ctrl::display::update_volume_display(this->tft_, last_state->volume);
       if (mute_changed && last_state)
-        esphome::vol_ctrl::display::update_mute_status(this->tft_, last_state->muted);
+        esphome::vol_ctrl::display::update_mute_status(this->tft_, last_state->muted, last_state->volume);
       esphome::vol_ctrl::display::update_status_message(this->tft_, "Long-press for menu");
       esphome::vol_ctrl::display::update_wifi_status(this->tft_, wifi_connected);
     }
@@ -191,9 +191,11 @@ void VolCtrl::toggle_mute() {
     if (state.muted) {
       state.set_mute(false);
       network::set_device_mute(ipv6, false);
+      esphome::vol_ctrl::display::update_mute_status(this->tft_, false, state.get_volume());
     } else {
       state.set_mute(true);
       network::set_device_mute(ipv6, true);
+      esphome::vol_ctrl::display::update_mute_status(this->tft_, true, state.get_volume());
     }
   }
   
