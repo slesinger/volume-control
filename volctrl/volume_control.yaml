@@ -75,10 +75,6 @@ ota:
   platform: esphome
   password: !secret ota_password
 
-web_server:
-  port: 80
-  version: 2
-
 spi:
   id: spi1
   clk_pin: GPIO18
@@ -139,16 +135,12 @@ binary_sensor:
     name: "Encoder Button"
     id: encoder_button
     filters:
-      - delayed_on: 50ms  # Debounce
+      - invert:
+      - delayed_on: 50ms
+      - delayed_off: 50ms
     on_press:
       then:
-        - logger.log: "Encoder button press detected"
-        # Use a simple click to toggle mute
-        - lambda: 'id(my_vol_ctrl).toggle_mute();'
-    on_multi_click:
-      - timing:
-          # Long press
-          - ON for at least 1s
-        then:
-          - logger.log: "Long press detected - enter menu"
-          - lambda: 'id(my_vol_ctrl).enter_menu();'
+        - lambda: 'id(my_vol_ctrl).button_pressed();'
+    on_release:
+      then:
+        - lambda: 'id(my_vol_ctrl).button_released();'

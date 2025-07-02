@@ -27,6 +27,8 @@ class VolCtrl : public Component, public spi::SPIDevice<spi::BIT_ORDER_MSB_FIRST
   
   // User interface methods
   void volume_change(const std::string &ipv6, float requested_volume);
+  void button_pressed();
+  void button_released();
   void toggle_mute();
   void enter_menu();
   void exit_menu();
@@ -66,7 +68,6 @@ class VolCtrl : public Component, public spi::SPIDevice<spi::BIT_ORDER_MSB_FIRST
   int menu_position_{0};
   int menu_items_count_{0};
   float volume_step_{1.0f};  // Default 1dB steps
-  uint32_t last_menu_toggle_{0};  // Timestamp of last menu enter/exit to prevent rapid toggling
   
   // Display settings
   int backlight_level_{100};  // 0-100%

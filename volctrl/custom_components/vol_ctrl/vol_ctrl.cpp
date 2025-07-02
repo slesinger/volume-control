@@ -12,12 +12,14 @@ namespace esphome {
 namespace vol_ctrl {
 
 static const char *const TAG = "vol_ctrl";
+uint32_t button_press_time_ = 0;
 
 enum class LoopState {
   WAIT_FOR_WIFI,
   MAIN_LOOP,
 };
 LoopState loop_state = LoopState::WAIT_FOR_WIFI;
+
 
 void VolCtrl::setup() {
   ESP_LOGCONFIG(TAG, "Setting up Volume Control...");
@@ -41,7 +43,6 @@ void VolCtrl::setup() {
   // Set initial state
   uint32_t now = millis();
   last_interaction_ = now;
-  last_menu_toggle_ = now;
   display_active_ = true;
   
   // Add a small delay to let things settle
@@ -157,6 +158,22 @@ void VolCtrl::volume_change(const std::string &ipv6, float requested_volume) {
   network::set_device_volume(ipv6, requested_volume);
 }
 
+void VolCtrl::button_pressed() {
+  button_press_time_ = millis();
+  ESP_LOGI(TAG, "press detected");
+}
+
+void VolCtrl::button_released() {
+  uint32_t press_duration = millis() - button_press_time_;
+  if (press_duration > 300) {  // long press threshold
+    ESP_LOGI(TAG, "Long press detected (%ums)", press_duration);
+    enter_menu();
+  } else {
+    ESP_LOGI(TAG, "Short press detected (%ums)", press_duration);
+    toggle_mute();
+  }
+}
+
 void VolCtrl::toggle_mute() {
   // If we're in menu mode, use this as a select button
   if (in_menu_) {
@@ -185,9 +202,8 @@ void VolCtrl::toggle_mute() {
 void VolCtrl::enter_menu() {
   uint32_t now = millis();
   
-  if (!in_menu_ && (now - this->last_menu_toggle_ > 1000)) {
+  if (!in_menu_) {
     ESP_LOGI(TAG, "Entering menu");
-    this->last_menu_toggle_ = now;
     in_menu_ = true;
     menu_level_ = 0;
     menu_position_ = 0;
@@ -201,7 +217,6 @@ void VolCtrl::enter_menu() {
 void VolCtrl::exit_menu() {
   if (in_menu_) {
     ESP_LOGI(TAG, "Exiting menu");
-    this->last_menu_toggle_ = millis();
     in_menu_ = false;
     menu_level_ = 0;
     menu_position_ = 0;
