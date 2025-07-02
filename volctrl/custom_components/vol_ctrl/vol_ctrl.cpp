@@ -121,21 +121,47 @@ void VolCtrl::loop() {
         last_state = &state; // keep reference to the last processed state
       }
       
-      // Update changed values on display (every 5sec)
-      if (standby_countdown_changed && last_state)
-        esphome::vol_ctrl::display::update_standby_time(this->tft_, last_state->standby_countdown);
-      if (is_up_changed)
-        esphome::vol_ctrl::display::update_speaker_dots(this->tft_, device_states);
-      esphome::vol_ctrl::display::update_datetime(this->tft_, utils::get_datetime_string());
-      if (volume_changed && last_state)
-        esphome::vol_ctrl::display::update_volume_display(this->tft_, last_state->volume);
-      if (mute_changed && last_state)
-        esphome::vol_ctrl::display::update_mute_status(this->tft_, last_state->muted, last_state->volume);
-      esphome::vol_ctrl::display::update_status_message(this->tft_, "Long-press for menu");
-      esphome::vol_ctrl::display::update_wifi_status(this->tft_, wifi_connected);
+      if (!in_menu_) {
+        // Update changed values on display (every 5sec)
+        if (standby_countdown_changed && last_state)
+          esphome::vol_ctrl::display::update_standby_time(this->tft_, last_state->standby_countdown);
+        if (is_up_changed)
+          esphome::vol_ctrl::display::update_speaker_dots(this->tft_, device_states);
+        esphome::vol_ctrl::display::update_datetime(this->tft_, utils::get_datetime_string());
+        if (volume_changed && last_state)
+          esphome::vol_ctrl::display::update_volume_display(this->tft_, last_state->volume);
+        if (mute_changed && last_state)
+          esphome::vol_ctrl::display::update_mute_status(this->tft_, last_state->muted, last_state->volume);
+        esphome::vol_ctrl::display::update_status_message(this->tft_, "Long-press for menu");
+        esphome::vol_ctrl::display::update_wifi_status(this->tft_, wifi_connected);
+      }
     }
   }
 }  // end of loop()
+
+void VolCtrl::update_whole_screen() {
+  std::map<std::string, DeviceState>& device_states = const_cast<std::map<std::string, DeviceState>&>(network::get_device_states());  // get list of devices and its states
+  DeviceState* last_state = nullptr;
+  for (auto &entry : device_states) {  // for every known device
+    const std::string &ipv6 = entry.first;
+    DeviceState &state = entry.second;
+    network::DeviceVolStdbyData current_device_data;
+    bool is_up = network::get_device_data(ipv6, current_device_data);
+    state.set_is_up(is_up);
+    state.set_standby_countdown(current_device_data.standby_countdown);
+    state.set_volume(current_device_data.volume);
+    state.set_mute(current_device_data.mute);
+    last_state = &state; // keep reference to the last processed state
+  }
+  this->tft_->fillScreen(TFT_BLACK);
+  esphome::vol_ctrl::display::update_standby_time(this->tft_, last_state->standby_countdown);
+  esphome::vol_ctrl::display::update_speaker_dots(this->tft_, device_states);
+  esphome::vol_ctrl::display::update_datetime(this->tft_, utils::get_datetime_string());
+  esphome::vol_ctrl::display::update_volume_display(this->tft_, last_state->volume);
+  esphome::vol_ctrl::display::update_mute_status(this->tft_, last_state->muted, last_state->volume);
+  esphome::vol_ctrl::display::update_status_message(this->tft_, "Long-press for menu");
+  esphome::vol_ctrl::display::update_wifi_status(this->tft_, wifi::global_wifi_component->is_connected());
+}
 
 // Handle volume change based on encoder ticks. It can be positive or negative.
 // If in menu mode, it will navigate the menu instead.
@@ -160,7 +186,6 @@ void VolCtrl::volume_change(const std::string &ipv6, float requested_volume) {
 
 void VolCtrl::button_pressed() {
   button_press_time_ = millis();
-  ESP_LOGI(TAG, "press detected");
 }
 
 void VolCtrl::button_released() {
@@ -169,7 +194,6 @@ void VolCtrl::button_released() {
     ESP_LOGI(TAG, "Long press detected (%ums)", press_duration);
     enter_menu();
   } else {
-    ESP_LOGI(TAG, "Short press detected (%ums)", press_duration);
     toggle_mute();
   }
 }
@@ -224,8 +248,7 @@ void VolCtrl::exit_menu() {
     menu_position_ = 0;
     
     // Force a full redraw when exiting menu
-    // TODO create full redraw function
-    // this->first_run_ = true;
+    update_whole_screen();
   }
 }
 
@@ -275,20 +298,21 @@ void VolCtrl::menu_select() {
           // Parametric EQ submenu
           menu_level_ = 1;  // Enter EQ submenu
           menu_position_ = 0;
-          menu_items_count_ = 3; // .. (back), Show curve, Add
+          menu_items_count_ = 4;
         } else if (menu_position_ == 4) {
           // Discover devices
           // This needs to trigger a new network discovery
           // TODO: Implement discovery trigger
         } else if (menu_position_ == 5) {
           // Speaker parameters submenu
-          menu_level_ = 2;  // Enter speaker parameters submenu
+          menu_level_ = 1;  // Enter speaker parameters submenu
           menu_position_ = 0;
-          // TODO: Implement speaker parameters submenu
+          menu_items_count_ = 6;
         } else if (menu_position_ == 6) {
           // Volume settings submenu
-          menu_level_ = 3;  // Enter volume settings submenu
+          menu_level_ = 1;  // Enter volume settings submenu
           menu_position_ = 0;
+          menu_items_count_ = 7;
           // TODO: Implement volume settings submenu
         }
         break;
@@ -323,62 +347,10 @@ void VolCtrl::menu_select() {
         // TODO: Implement other volume settings submenu items
         break;
     }
-    
+    ESP_LOGI("vol_ctrl", "Menu: level=%d, position=%d, items=%d", menu_level_, menu_position_, menu_items_count_);
     // Redraw the menu screen
-    this->tft_->fillScreen(TFT_BLACK);
-    this->tft_->setTextFont(4);
-    this->tft_->setTextColor(TFT_WHITE, TFT_BLACK);
-    
-    // Draw the appropriate menu based on the current level
-    switch (menu_level_) {
-      case 0:  // Main menu
-        this->tft_->drawString("MENU", 10, 10);
-        this->tft_->setTextFont(2);
-        this->tft_->drawString("1. Exit menu", 20, 50);
-        this->tft_->drawString("2. Show devices", 20, 70);
-        this->tft_->drawString("3. Show settings", 20, 90);
-        this->tft_->drawString("4. Parametric EQ", 20, 110);
-        this->tft_->drawString("5. Discover devices", 20, 130);
-        this->tft_->drawString("6. Speaker parameters", 20, 150);
-        this->tft_->drawString("7. Volume settings", 20, 170);
-        break;
-        
-      case 1:  // EQ submenu
-        this->tft_->drawString("EQ MENU", 10, 10);
-        this->tft_->setTextFont(2);
-        this->tft_->drawString("..", 20, 50);
-        this->tft_->drawString("1. Show curve", 20, 70);
-        this->tft_->drawString("2. Add EQ", 20, 90);
-        break;
-        
-      case 2:  // Speaker parameters submenu
-        this->tft_->drawString("SPEAKER SETTINGS", 10, 10);
-        this->tft_->setTextFont(2);
-        this->tft_->drawString("..", 20, 50);
-        this->tft_->drawString("1. Logo brightness", 20, 70);
-        this->tft_->drawString("2. Set delay", 20, 90);
-        this->tft_->drawString("3. Standby timeout", 20, 110);
-        this->tft_->drawString("4. Auto standby", 20, 130);
-        break;
-        
-      case 3:  // Volume settings submenu
-        this->tft_->drawString("VOLUME SETTINGS", 10, 10);
-        this->tft_->setTextFont(2);
-        this->tft_->drawString("..", 20, 50);
-        this->tft_->drawString("1. Volume step", 20, 70);
-        this->tft_->drawString("2. Backlight", 20, 90);
-        this->tft_->drawString("3. Display timeout", 20, 110);
-        this->tft_->drawString("4. ESP sleep", 20, 130);
-        break;
-    }
-    
-    // Highlight the selected item
-    this->tft_->fillRect(10, 50 + (menu_position_ * 20), 10, 10, TFT_YELLOW);
+    esphome::vol_ctrl::display::draw_menu_screen(this->tft_, menu_level_, menu_position_, menu_items_count_);
   }
-}
-
-void VolCtrl::dump_config() {
-  ESP_LOGCONFIG(TAG, "Volume Control:");
 }
 
 // This function is only called from Home Assistant service

@@ -21,10 +21,10 @@ class VolCtrl : public Component, public spi::SPIDevice<spi::BIT_ORDER_MSB_FIRST
   // Standard ESPHome methods
   void setup() override;
   void loop() override;
-  void dump_config() override;
   
   float get_setup_priority() const override { return esphome::setup_priority::AFTER_CONNECTION; }
-  
+  void update_whole_screen();
+
   // User interface methods
   void volume_change(const std::string &ipv6, float requested_volume);
   void button_pressed();

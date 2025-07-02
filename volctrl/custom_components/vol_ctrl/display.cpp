@@ -176,66 +176,75 @@ void update_status_message(TFT_eSPI *tft, const std::string &status) {
 void draw_menu_item_highlight(TFT_eSPI *tft, int position, int prev_position) {
   // Clear previous highlight
   if (prev_position >= 0) {
-    tft->fillRect(10, 50 + (prev_position * 20), 10, 10, TFT_BLACK);
+    tft->fillRect(0, 52 + (prev_position * 20), 14, 14, TFT_BLACK);
   }
   
   // Draw new highlight
-  tft->fillRect(10, 50 + (position * 20), 10, 10, TFT_YELLOW);
+  tft->fillCircle(7, 58 + (position * 20), 5, TFT_ORANGE);
 }
 
 void draw_menu_screen(TFT_eSPI *tft, int menu_level, int menu_position, int menu_items_count) {
+  const int MENU_LEFT = 20; // Left margin for menu items
   // Clear screen
   tft->fillScreen(TFT_BLACK);
   tft->setTextDatum(TL_DATUM); // Top-left alignment
   
   // Draw menu title
   tft->setTextFont(4);
-  tft->setTextColor(TFT_WHITE, TFT_BLACK);
+  tft->setTextColor(TFT_ORANGE, TFT_BLACK);
   
   if (menu_level == 0) {
     // Main menu
     tft->drawString("MENU", 10, 10);
     
     // Draw menu items
+    tft->setTextColor(TFT_WHITE, TFT_BLACK);
     tft->setTextFont(2);
-    tft->drawString("1. Exit menu", 20, 50);
-    tft->drawString("2. Show devices", 20, 70);
-    tft->drawString("3. Show settings", 20, 90);
-    tft->drawString("4. Parametric EQ", 20, 110);
-    tft->drawString("5. Discover devices", 20, 130);
-    tft->drawString("6. Speaker parameters", 20, 150);
-    tft->drawString("7. Volume settings", 20, 170);
+    tft->drawString("1. Exit menu", MENU_LEFT, 50);
+    tft->drawString("2. List speakers", MENU_LEFT, 70);
+    tft->drawString("3. Speaker details", MENU_LEFT, 90);
+    tft->drawString("4. Parametric EQ", MENU_LEFT, 110);
+    tft->drawString("5. Discover devices", MENU_LEFT, 130);
+    tft->drawString("6. Set speaker params", MENU_LEFT, 150);
+    tft->drawString("7. Volume Control settings", MENU_LEFT, 170);
   } else if (menu_level == 1) {
     // Submenu rendering based on parent menu item
     switch (menu_items_count) {
       case 4: // Parametric EQ submenu
         tft->drawString("PARAMETRIC EQ", 10, 10);
+        tft->setTextColor(TFT_WHITE, TFT_BLACK);
         tft->setTextFont(2);
-        tft->drawString(".. Back", 20, 50);
-        tft->drawString("1. List EQs", 20, 70);
-        tft->drawString("2. Add EQ", 20, 90);
+        tft->drawString(".. Back", MENU_LEFT, 50);
+        tft->drawString("1. List EQs", MENU_LEFT, 70);
+        tft->drawString("2. Add EQ", MENU_LEFT, 90);
         break;
         
       case 6: // Speaker parameters submenu
-        tft->drawString("SPEAKER PARAMETERS", 10, 10);
+        tft->drawString("SET SPEAKER PRMS", 0, 10);
+        tft->setTextColor(TFT_WHITE, TFT_BLACK);
         tft->setTextFont(2);
-        tft->drawString(".. Back", 20, 50);
-        tft->drawString("1. Logo brightness", 20, 70);
-        tft->drawString("2. Auto standby time", 20, 90);
+        tft->drawString(".. Back", MENU_LEFT, 50);
+        tft->drawString("1. Logo brightness", MENU_LEFT, 70);
+        tft->drawString("2. Set delay", MENU_LEFT, 90);
+        tft->drawString("3. Standby timeout", MENU_LEFT, 110);
+        tft->drawString("4. Auto standby", MENU_LEFT, 130);
         break;
         
       case 7: // Volume settings submenu
         tft->drawString("VOLUME SETTINGS", 10, 10);
+        tft->setTextColor(TFT_WHITE, TFT_BLACK);
         tft->setTextFont(2);
-        tft->drawString(".. Back", 20, 50);
-        tft->drawString("1. Volume step", 20, 70);
-        tft->drawString("2. Deep sleep timeout", 20, 90);
+        tft->drawString(".. Back", MENU_LEFT, 50);
+        tft->drawString("1. Volume step", MENU_LEFT, 70);
+        tft->drawString("2. Backlight intensity", MENU_LEFT, 90);
+        tft->drawString("3. Display timeout", MENU_LEFT, 110);
+        tft->drawString("4. Deep sleep timeout", MENU_LEFT, 90);
         break;
         
       default:
-        tft->drawString("SUBMENU", 10, 10);
+        tft->drawString("SUBMENU ErRoR", 10, 10);
         tft->setTextFont(2);
-        tft->drawString(".. Back", 20, 50);
+        tft->drawString(".. Back", MENU_LEFT, 50);
         break;
     }
   }
