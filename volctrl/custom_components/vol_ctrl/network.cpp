@@ -118,92 +118,6 @@ bool send_ssc_command(const std::string &ipv6, const std::string &command, std::
   return success;
 }
 
-bool is_device_up(const std::string &ipv6) {
-  uint32_t now = millis();
-  auto &state = device_states[ipv6];
-  
-  // Check every 10 seconds
-  if (state.status != UNKNOWN && now - state.last_check < 10000) {
-    return state.status == UP;
-  }
-  
-  state.last_check = now;
-  
-  // Rotate symbol for this device
-  device_rot[ipv6] = (device_rot[ipv6] + 1) % ROT_SYMBOLS_LEN;
-  
-  // Try to connect and send an SSC command
-  std::string response;
-  // Query if the device is in standby mode
-  ESP_LOGI(TAG, "Checking standby status for device %s", ipv6.c_str());
-  bool success = send_ssc_command(ipv6, "{\"device\":{\"standby\":{\"enabled\":null}}}", response);
-  
-  if (success) {
-    state.status = UP;
-    // Extract standby status from response
-    bool standby_enabled;
-    if (utils::check_json_boolean(response, "enabled", standby_enabled)) {
-      ESP_LOGI(TAG, "Standby status for device %s: %s", ipv6.c_str(), standby_enabled ? "true" : "false");
-      state.standby = standby_enabled;
-    } else {
-      ESP_LOGW(TAG, "Failed to extract standby status from response: %s", response.c_str());
-      // If we can't parse the standby state, assume the device is NOT in standby
-      // since it responded to our query
-      state.standby = false;
-    }
-    return true;
-  } else {
-    state.status = DOWN;
-    ESP_LOGW(TAG, "Device %s is DOWN", ipv6.c_str());
-    return false;
-  }
-}
-
-bool get_device_volume(const std::string &ipv6, float &volume) {
-  ESP_LOGI(TAG, "Fetching volume from device %s", ipv6.c_str());
-  std::string response;
-  bool success = send_ssc_command(ipv6, "{\"audio\":{\"out\":{\"level\":null}}}", response);
-  
-  if (success) {
-    ESP_LOGI(TAG, "Got response for volume query: %s", response.c_str());
-    if (utils::extract_json_number(response, "level", volume)) {
-      // Update the device state with the new volume value
-      device_states[ipv6].volume = volume;
-      ESP_LOGI(TAG, "Successfully extracted volume: %.1f from device %s", volume, ipv6.c_str());
-      return true;
-    } else {
-      ESP_LOGE(TAG, "Failed to extract volume from response: %s", response.c_str());
-    }
-  } else {
-    ESP_LOGE(TAG, "Failed to get volume from device %s", ipv6.c_str());
-  }
-  return false;
-}
-
-bool get_device_mute_status(const std::string &ipv6, bool &muted) {
-  std::string response;
-  bool success = send_ssc_command(ipv6, "{\"audio\":{\"out\":{\"mute\":null}}}", response);
-  
-  if (success) {
-    return utils::check_json_boolean(response, "mute", muted);
-  }
-  return false;
-}
-
-bool get_device_standby_time(const std::string &ipv6, int &standby_time) {
-  std::string response;
-  bool success = send_ssc_command(ipv6, "{\"device\":{\"standby\":{\"auto_standby_time\":null}}}", response);
-  
-  if (success) {
-    float time_float;
-    if (utils::extract_json_number(response, "auto_standby_time", time_float)) {
-      standby_time = static_cast<int>(time_float);
-      return true;
-    }
-  }
-  return false;
-}
-
 void register_device(const std::string &name, const std::string &ipv6) {
   device_map[name] = ipv6;
   device_states[ipv6] = DeviceState();
@@ -212,6 +126,56 @@ void register_device(const std::string &name, const std::string &ipv6) {
 
 const std::map<std::string, DeviceState>& get_device_states() {
   return device_states;
+}
+
+// Return value indicates whether speaker is up or down, while data struct carrye volume, mute and standby-countdown
+bool get_device_data(const std::string &ipv6, DeviceVolStdbyData &data) {
+  std::string response;
+  bool success = send_ssc_command(
+    ipv6, 
+    "{\"device\":{\"standby\":{\"countdown\":null}},\"audio\":{\"out\":{\"level\":null,\"mute\":null}}}",
+    response);
+  
+  if (success) {
+    float level = 0.0f;
+    float countdown = 0.0f;
+    bool mute = false;
+    bool ok = true;
+    ok &= utils::extract_json_number(response, "level", level);
+    ok &= utils::extract_json_number(response, "countdown", countdown);
+    ok &= utils::check_json_boolean(response, "mute", mute);
+    if (ok) {
+      data.volume = level;
+      data.standby_countdown = static_cast<int>(countdown);
+      data.mute = mute;
+      return true;
+    }
+  }
+  return false;
+}
+
+bool set_device_volume(const std::string &ipv6, float volume) {
+  std::string command = "{\"audio\":{\"out\":{\"level\":" + std::to_string(volume) + "}}}";
+  std::string response;
+  if (network::send_ssc_command(ipv6, command, response)) {
+    ESP_LOGI(TAG, "Successfully set volume to %.1f for device %s, response: %s", volume, ipv6.c_str(), response.c_str());
+    return true;
+  } else {
+    ESP_LOGE(TAG, "Failed to set volume for device %s - network error", ipv6.c_str());
+    return false;
+  }
+}
+
+bool set_device_mute(const std::string &ipv6, bool mute) {
+  std::string command = "{\"audio\":{\"out\":{\"mute\":" + std::string(mute ? "true" : "false") + "}}}";
+  std::string response;
+  if (network::send_ssc_command(ipv6, command, response)) {
+    ESP_LOGI(TAG, "Successfully %s device %s, response: %s", mute ? "muted" : "unmuted", ipv6.c_str(), response.c_str());
+    return true;
+  } else {
+    ESP_LOGE(TAG, "Failed to %s device %s - network error", mute ? "mute" : "unmute", ipv6.c_str());
+    return false;
+  }
 }
 
 void log_ipv6_addresses() {

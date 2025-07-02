@@ -57,7 +57,7 @@ api:
       variables:
         level: float
       then:
-        - lambda: 'id(my_vol_ctrl).set_volume(level);'
+        - lambda: 'id(my_vol_ctrl).set_volume_from_hass(level);'
     
     - service: toggle_mute
       then:
@@ -65,11 +65,11 @@ api:
     
     - service: volume_up
       then:
-        - lambda: 'id(my_vol_ctrl).volume_increase();'
+        - lambda: 'id(my_vol_ctrl).volume_change_from_hass(1);'
     
     - service: volume_down
       then:
-        - lambda: 'id(my_vol_ctrl).volume_decrease();'
+        - lambda: 'id(my_vol_ctrl).volume_change_from_hass(-1);'
 
 ota:
   platform: esphome

@@ -26,8 +26,7 @@ class VolCtrl : public Component, public spi::SPIDevice<spi::BIT_ORDER_MSB_FIRST
   float get_setup_priority() const override { return esphome::setup_priority::AFTER_CONNECTION; }
   
   // User interface methods
-  void volume_increase();
-  void volume_decrease();
+  void volume_change(const std::string &ipv6, float requested_volume);
   void toggle_mute();
   void enter_menu();
   void exit_menu();
@@ -42,8 +41,9 @@ class VolCtrl : public Component, public spi::SPIDevice<spi::BIT_ORDER_MSB_FIRST
   void menu_select();
   
   // Direct volume setting for Home Assistant
-  void set_volume(float level);
-  
+  void set_volume_from_hass(float level);
+  void volume_change_from_hass(float diff);
+
   // Process encoder changes by directly querying speakers for current volume
   void process_encoder_change(int diff);
 
@@ -57,21 +57,8 @@ class VolCtrl : public Component, public spi::SPIDevice<spi::BIT_ORDER_MSB_FIRST
   TFT_eSPI *tft_{nullptr};
   
   // UI state tracking
-  bool wifi_connected_prev_{false};
-  bool muted_prev_{false};
-  bool standby_prev_{false};
-  float volume_prev_{-999.0f};  // Invalid value to force first update
-  int standby_time_prev_{-1};  // Invalid value to force first update
-  std::string status_{"Connecting to WiFi"};
-  std::string status_prev_{""}; // Previous status message
-  std::string datetime_{"--:-- --- --"};
-  std::string datetime_prev_{""};
-  bool normal_{false};
-  bool normal_prev_{false};
-  uint32_t last_redraw_{0};
   uint32_t last_device_check_{0};
   uint32_t last_detail_check_{0};
-  bool first_run_{true};
   
   // Menu state
   bool in_menu_{false};
@@ -93,10 +80,7 @@ class VolCtrl : public Component, public spi::SPIDevice<spi::BIT_ORDER_MSB_FIRST
   // Rate limiting for volume changes
   uint32_t last_volume_change_{0}; // Timestamp of last volume change to rate limit
   bool user_adjusting_volume_{false}; // Flag to indicate user is actively changing volume
-  bool volume_initialized_{false}; // Flag to indicate if we've read initial volume from speakers
   
-  // Accumulator for pending encoder changes during rate limiting
-  int pending_encoder_changes_{0};
 };
 
 }  // namespace vol_ctrl

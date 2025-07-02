@@ -76,3 +76,4 @@ secrets.yaml
 
 .esphome/idedata/volume-control.json
 .esphome/storage/volume-control.yaml.json
+cad/**/*.FCStd1

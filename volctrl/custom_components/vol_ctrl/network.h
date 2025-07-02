@@ -3,26 +3,35 @@
 #include <string>
 #include "device_state.h"
 
-namespace esphome {
-namespace vol_ctrl {
-namespace network {
+namespace esphome
+{
+    namespace vol_ctrl
+    {
+        namespace network
+        {
 
-// Network-related functions
-bool send_ssc_command(const std::string &ipv6, const std::string &command, std::string &response);
-bool is_device_up(const std::string &ipv6);
-bool get_device_volume(const std::string &ipv6, float &volume);
-bool get_device_mute_status(const std::string &ipv6, bool &muted);
-bool get_device_standby_time(const std::string &ipv6, int &standby_time);
+            struct DeviceVolStdbyData
+            {
+                int standby_countdown = 0;
+                float volume = 0.0f;
+                bool mute = false;
+            };
 
-// Register device for monitoring
-void register_device(const std::string &name, const std::string &ipv6);
+            // Network-related functions
+            bool send_ssc_command(const std::string &ipv6, const std::string &command, std::string &response);
+            bool get_device_data(const std::string &ipv6, DeviceVolStdbyData &data);
+            bool set_device_volume(const std::string &ipv6, float volume);
+            bool set_device_mute(const std::string &ipv6, bool mute);
 
-// Get device state map reference
-const std::map<std::string, DeviceState>& get_device_states();
+            // Register device for monitoring
+            void register_device(const std::string &name, const std::string &ipv6);
 
-// Initialize network subsystem
-void init();
+            // Get device state map reference
+            const std::map<std::string, DeviceState> &get_device_states();
 
-}  // namespace network
-}  // namespace vol_ctrl
-}  // namespace esphome
+            // Initialize network subsystem
+            void init();
+
+        } // namespace network
+    } // namespace vol_ctrl
+} // namespace esphome

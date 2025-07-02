@@ -11,26 +11,20 @@ namespace display {
 
 // Display drawing functions
 void draw_wifi_icon(TFT_eSPI *tft, int x, int y, bool connected);
-void draw_speaker_dots(TFT_eSPI *tft, int x, int y, const std::map<std::string, DeviceState> &states);
 void draw_forbidden_icon(TFT_eSPI *tft, int x, int y);
-void draw_zzz_icon(TFT_eSPI *tft, int x, int y);
 
 // Full section drawing
-void draw_top_line(TFT_eSPI *tft, bool wifi_connected, const std::map<std::string, DeviceState> &states, int standby_time, const std::string &datetime);
-void draw_bottom_line(TFT_eSPI *tft, const std::string &status, bool normal);
-void draw_middle_area(TFT_eSPI *tft, float volume, bool muted, bool standby, bool volume_ok);
 void draw_exclamation_mark(TFT_eSPI *tft, int x, int y, int height);
 
 // Partial section updates for efficient rendering
-void update_wifi_status(TFT_eSPI *tft, int x, int y, bool connected, bool prev_connected);
-void update_datetime(TFT_eSPI *tft, const std::string &datetime, const std::string &prev_datetime);
-void update_standby_time(TFT_eSPI *tft, int standby_time, int prev_standby_time);
-void update_volume_display(TFT_eSPI *tft, float volume, float prev_volume, bool volume_ok);
-void update_volume_display(TFT_eSPI *tft, float volume, float prev_volume, bool volume_ok, bool prev_volume_ok);
-void update_volume_display(TFT_eSPI *tft, float volume, float prev_volume, bool volume_ok, bool prev_volume_ok, bool user_adjusting);
-void update_mute_status(TFT_eSPI *tft, bool muted, bool prev_muted);
+void update_wifi_status(TFT_eSPI *tft, int x, int y, bool connected);
+void update_speaker_dots(TFT_eSPI *tft, const std::map<std::string, DeviceState> &states);
+void update_datetime(TFT_eSPI *tft, const std::string &datetime);
+void update_standby_time(TFT_eSPI *tft, int standby_countdown);
+void update_volume_display(TFT_eSPI *tft, float volume, bool user_adjusting = false);
+void update_mute_status(TFT_eSPI *tft, bool muted);
 void update_standby_status(TFT_eSPI *tft, bool standby, bool prev_standby);
-void update_status_message(TFT_eSPI *tft, const std::string &status, const std::string &prev_status, bool normal, bool prev_normal);
+void update_status_message(TFT_eSPI *tft, const std::string &status);
 
 // Menu drawing functions
 void draw_menu_item_highlight(TFT_eSPI *tft, int position, int prev_position);

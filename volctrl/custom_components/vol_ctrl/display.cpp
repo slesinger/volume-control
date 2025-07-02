@@ -1,3 +1,4 @@
+// ...existing code...
 #include "display.h"
 #include "device_state.h"
 #include <TFT_eSPI.h>
@@ -82,34 +83,6 @@ void draw_wifi_icon(TFT_eSPI *tft, int x, int y, bool connected) {
   }
 }
 
-void draw_speaker_dots(TFT_eSPI *tft, int x, int y, const std::map<std::string, DeviceState> &states) {
-  int dx = 18;
-  int i = 0;
-  for (const auto &entry : states) {
-    const DeviceState &state = entry.second;
-    bool up = (state.status == UP);
-    bool standby = (up && state.standby);
-    uint16_t color;
-    if (!up) {
-      color = TFT_RED; // Device down - red
-    } else if (standby) {
-      color = TFT_BLUE; // Standby - blue
-    } else {
-      color = TFT_GREEN; // Connected - green
-    }
-    tft->fillCircle(x + i * dx, y, 7, color);
-    tft->drawCircle(x + i * dx, y, 7, TFT_WHITE);
-    if (up && state.muted) {
-      tft->setTextFont(1);
-      tft->setTextColor(TFT_BLACK, color);
-      tft->setTextSize(1);
-      tft->setTextDatum(MC_DATUM);
-      tft->drawString("M", x + i * dx, y);
-    }
-    i++;
-  }
-}
-
 void draw_exclamation_mark(TFT_eSPI *tft, int x, int y, int height) {
   int mark_height = height / 2;
   int mark_width = mark_height / 4;
@@ -125,117 +98,7 @@ void draw_forbidden_icon(TFT_eSPI *tft, int x, int y) {
   tft->drawLine(x+17, y-17, x-17, y+17, TFT_RED);
 }
 
-void draw_zzz_icon(TFT_eSPI *tft, int x, int y) {
-  tft->setTextFont(4);  // Use smoother font 4
-  tft->setTextColor(TFT_CYAN, TFT_BLACK);
-  tft->setTextSize(1);
-  tft->drawString("Zzz", x, y);
-}
-
-void draw_top_line(TFT_eSPI *tft, bool wifi_connected, const std::map<std::string, DeviceState> &states, int standby_time, const std::string &datetime) {
-  tft->setTextFont(2);  // Use smaller smooth font 2 for header
-  tft->setTextColor(TFT_WHITE, TFT_BLACK);
-  tft->setTextSize(1);  // Normal size but smaller font
-  int y = 12;  // Adjusted position for the smaller font
-  
-  // Standby time (left)
-  char buf[16];
-  if (standby_time > 0) {
-    snprintf(buf, sizeof(buf), "%dm", standby_time);
-    tft->drawString(buf, 15, y);
-  } else {
-    tft->drawString("--m", 15, y);
-  }
-  
-  // WiFi icon (left of datetime)
-  draw_wifi_icon(tft, 60, y+5, wifi_connected);
-  
-  // Speaker dots (left)
-  draw_speaker_dots(tft, 90, y+5, states);
-  
-  // Date/time (right)
-  tft->setTextDatum(TR_DATUM);
-  tft->drawString(datetime.c_str(), tft->width()-5, y-8);
-  tft->setTextDatum(MC_DATUM);
-}
-
-void draw_bottom_line(TFT_eSPI *tft, const std::string &status, bool normal) {
-  int y = tft->height() - 28;  // Adjusted y position for larger font
-  if (normal) {
-    tft->setTextFont(4);  // Use smoother font 4
-    tft->setTextColor(TFT_WHITE, TFT_BLACK);
-    tft->setTextSize(1);  // Reduced size since font 4 is larger
-    tft->drawString("Press for menu", tft->width()/2, y);
-  } else {
-    tft->setTextFont(2);  // Use smaller font 2 for status messages to ensure they fit
-    tft->setTextColor(TFT_WHITE, TFT_BLACK);
-    tft->setTextSize(1);
-    tft->drawString(status.c_str(), tft->width()/2, y);
-  }
-}
-
-void draw_middle_area(TFT_eSPI *tft, float volume, bool muted, bool standby, bool volume_ok) {
-  int y = tft->height()/2 - 8;
-  int font_height = 64; // Approximate for font 8, size 2
-  tft->setTextFont(8);
-  tft->setTextSize(2);
-  char buf[8];
-  // Always show the last known volume value, except for the initial invalid state
-  if (volume == -999.0f) {
-    // Show -- only for the initial invalid state
-    snprintf(buf, sizeof(buf), "--");
-  } else {
-    // Show the volume value (current or previous)
-    snprintf(buf, sizeof(buf), "%.0f", volume);
-  }
-  if (volume_ok) {
-    tft->setTextColor(TFT_YELLOW, TFT_BLACK);
-    tft->drawString(buf, tft->width()/2, y);
-  } else {
-    // Show previous known information with gray color
-    tft->setTextColor(TFT_DARKGREY, TFT_BLACK);
-    tft->drawString(buf, tft->width()/2, y);
-    // Show exclamation mark to indicate error retrieving data
-    draw_exclamation_mark(tft, tft->width()/2 + 40, y, font_height); 
-  }
-  if (muted) draw_forbidden_icon(tft, tft->width()/2, y);
-  if (standby) draw_zzz_icon(tft, tft->width()/2, y-40);
-  
-  // Draw volume bar with the last known value, even when there's an error
-  // Only skip drawing for the initial invalid state
-  if (volume != -999.0f) {
-    int bar_width = tft->width() - 40;
-    int bar_height = 8;
-    int bar_y = y + 50;
-    int fill_width = 0;
-    if (volume >= -60 && volume <= 0) {
-      fill_width = (int)((volume + 60) / 60.0f * bar_width);
-    }
-    // Always draw the empty bar outline
-    tft->fillRect(20, bar_y, bar_width, bar_height, 0x4208);
-    if (fill_width > 0) {
-      uint16_t bar_color;
-      if (volume_ok) {
-        // Normal colors when data is valid
-        bar_color = TFT_GREEN;
-        if (volume > -15) bar_color = TFT_YELLOW;
-        if (volume > -5) bar_color = TFT_RED;
-      } else {
-        // Use a dimmer color when showing previous data due to error
-        bar_color = 0x3186; // Dimmer green
-        if (volume > -15) bar_color = 0x5284; // Dimmer yellow
-        if (volume > -5) bar_color = 0x4124;  // Dimmer red
-      }
-      tft->fillRect(20, bar_y, fill_width, bar_height, bar_color);
-    }
-  }
-}
-
-// Partial update functions
-
-void update_wifi_status(TFT_eSPI *tft, int x, int y, bool connected, bool prev_connected) {
-  if (connected == prev_connected) return; // No change
-  
+void update_wifi_status(TFT_eSPI *tft, int x, int y, bool connected) {
   // Clear previous icon
   ScreenRegion region = get_wifi_region(x, y);
   tft->fillRect(region.x, region.y, region.w, region.h, TFT_BLACK);
@@ -244,9 +107,27 @@ void update_wifi_status(TFT_eSPI *tft, int x, int y, bool connected, bool prev_c
   draw_wifi_icon(tft, x, y, connected);
 }
 
-void update_datetime(TFT_eSPI *tft, const std::string &datetime, const std::string &prev_datetime) {
-  if (datetime == prev_datetime) return; // No change
-  
+void update_speaker_dots(TFT_eSPI *tft, const std::map<std::string, DeviceState> &states) {
+  int idx = 0;
+  int x = 94; // starting x coordinate for the first dot (adjust as needed)
+  int y = 22; // y coordinate for the dots (adjust as needed)
+  int dx = 18; // horizontal spacing between dots (should match update_speaker_dots)
+  for (const auto &entry : states) {
+    const DeviceState &state = entry.second;
+    // You may want to clear the area before drawing each dot if needed
+    uint16_t color;
+    if (!state.is_up) {
+      color = TFT_RED;
+    } else {
+      color = TFT_GREEN;
+    }
+    tft->fillCircle(x + idx * dx, y, 7, color);
+    tft->drawCircle(x + idx * dx, y, 7, TFT_WHITE);
+    idx++;
+  }
+}
+
+void update_datetime(TFT_eSPI *tft, const std::string &datetime) {
   // Clear previous text
   ScreenRegion region = get_datetime_region();
   tft->fillRect(region.x, region.y, region.w, region.h, TFT_BLACK);
@@ -260,9 +141,7 @@ void update_datetime(TFT_eSPI *tft, const std::string &datetime, const std::stri
   tft->setTextDatum(MC_DATUM);
 }
 
-void update_standby_time(TFT_eSPI *tft, int standby_time, int prev_standby_time) {
-  if (standby_time == prev_standby_time) return; // No change
-  
+void update_standby_time(TFT_eSPI *tft, int standby_time) {
   // Clear previous text
   ScreenRegion region = get_standby_time_region();
   tft->fillRect(region.x, region.y, region.w, region.h, TFT_BLACK);
@@ -280,26 +159,7 @@ void update_standby_time(TFT_eSPI *tft, int standby_time, int prev_standby_time)
   }
 }
 
-// Backward-compatible version of update_volume_display for existing callers
-void update_volume_display(TFT_eSPI *tft, float volume, float prev_volume, bool volume_ok) {
-  // Call the full version with the same volume_ok value for previous state
-  update_volume_display(tft, volume, prev_volume, volume_ok, volume_ok, false);
-}
-
-// Backward-compatible version with prev_volume_ok parameter
-void update_volume_display(TFT_eSPI *tft, float volume, float prev_volume, bool volume_ok, bool prev_volume_ok) {
-  // Call the full version with user_adjusting set to false
-  update_volume_display(tft, volume, prev_volume, volume_ok, prev_volume_ok, false);
-}
-
-void update_volume_display(TFT_eSPI *tft, float volume, float prev_volume, bool volume_ok, bool prev_volume_ok, bool user_adjusting) {
-  // We want to update if:
-  // 1. The volume value changed, OR
-  // 2. The volume_ok status changed, OR
-  // 3. The user_adjusting mode is active (we're using blue color)
-  // Note: never skip update when user_adjusting is true as we need to show blue color
-  if (volume == prev_volume && volume_ok == prev_volume_ok && !user_adjusting) return; // No change
-
+void update_volume_display(TFT_eSPI *tft, float volume, bool user_adjusting) {  // TODO make sure this function for requested (blue) volume also
   // Clear previous volume display
   ScreenRegion region = get_volume_region();
   tft->fillRect(region.x, region.y, region.w, region.h, TFT_BLACK);
@@ -320,28 +180,17 @@ void update_volume_display(TFT_eSPI *tft, float volume, float prev_volume, bool 
   if (user_adjusting) {
     // Use blue for user-initiated changes as per requirements
     tft->setTextColor(TFT_BLUE, TFT_BLACK);
-  } else if (volume_ok) {
-    tft->setTextColor(TFT_YELLOW, TFT_BLACK);
   } else {
-    tft->setTextColor(TFT_DARKGREY, TFT_BLACK);
+    tft->setTextColor(TFT_YELLOW, TFT_BLACK);
   }
 
   // Draw volume
   int y = tft->height()/2 - 8;
   tft->drawString(buf, tft->width()/2, y);
-
-  // Add exclamation mark for error if needed
-  if (!volume_ok && volume != -999.0f) {
-    tft->drawString("!", tft->width()/2 + tft->textWidth(buf, 8), y);
-  }
 }
 
 void update_mute_status(TFT_eSPI *tft, bool muted, bool prev_muted) {
-  if (muted == prev_muted) return; // No change
-  
-  // Clear previous mute icon
-  ScreenRegion region = get_mute_region();
-  tft->fillRect(region.x, region.y, region.w, region.h, TFT_BLACK);
+  if (!muted) return; // Avoid drawing mute sign if not muted
   
   // Draw new mute icon if muted
   if (muted) {
@@ -356,21 +205,19 @@ void update_standby_status(TFT_eSPI *tft, bool standby, bool prev_standby) {
   ScreenRegion region = get_standby_icon_region();
   tft->fillRect(region.x, region.y, region.w, region.h, TFT_BLACK);
   
-  // Draw new standby icon if in standby
-  if (standby) {
-    draw_zzz_icon(tft, tft->width()/2, tft->height()/2 - 40);
-  }
 }
 
-void update_status_message(TFT_eSPI *tft, const std::string &status, const std::string &prev_status, bool normal, bool prev_normal) {
-  if (status == prev_status && normal == prev_normal) return; // No change
-  
+void update_status_message(TFT_eSPI *tft, const std::string &status) {
   // Clear previous message
   ScreenRegion region = get_bottom_line_region();
   tft->fillRect(region.x, region.y, region.w, region.h, TFT_BLACK);
   
-  // Draw bottom line
-  draw_bottom_line(tft, status, normal);
+  int y = tft->height() - 28;  // Adjusted y position for larger font
+  tft->setTextFont(2);  // Use smaller font 2 for status messages to ensure they fit
+  tft->setTextColor(TFT_WHITE, TFT_BLACK);
+  tft->setTextSize(1);
+  tft->drawString(status.c_str(), tft->width()/2, y);
+
 }
 
 // Menu drawing functions
