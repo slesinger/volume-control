@@ -69,7 +69,7 @@ bool send_ssc_command(const std::string &ipv6, const std::string &command, std::
     return false;
   }
 
-  ESP_LOGI(TAG, "Socket created, attempting to connect to [%s]:45...", ipv6.c_str());
+  ESP_LOGD(TAG, "Socket created, attempting to connect to [%s]:45...", ipv6.c_str());
   int connect_result = connect(sock, (struct sockaddr *)&sa, sizeof(sa));
   if (connect_result < 0) {
     ESP_LOGE(TAG, "Failed to connect to %s: %d (errno: %d - %s)", 
@@ -77,12 +77,12 @@ bool send_ssc_command(const std::string &ipv6, const std::string &command, std::
     close(sock);
     return false;
   }
-  ESP_LOGI(TAG, "Connected to [%s]:45 in %u ms", ipv6.c_str(), millis() - start_time);
+  ESP_LOGD(TAG, "Connected to [%s]:45 in %u ms", ipv6.c_str(), millis() - start_time);
 
   // Always send command with CRLF line ending as required by the protocol
   std::string request = command + "\r\n";
   int sent = 0, total_sent = 0;
-  ESP_LOGI(TAG, "Sending %d bytes: %s", (int)request.length(), request.c_str());
+  ESP_LOGD(TAG, "Sending %d bytes: %s", (int)request.length(), request.c_str());
   
   while (total_sent < (int)request.length()) {
     sent = send(sock, request.c_str() + total_sent, request.length() - total_sent, 0);
@@ -93,12 +93,12 @@ bool send_ssc_command(const std::string &ipv6, const std::string &command, std::
     }
     total_sent += sent;
   }
-  ESP_LOGI(TAG, "Successfully sent %d bytes in %u ms", total_sent, millis() - start_time);
+  ESP_LOGD(TAG, "Successfully sent %d bytes in %u ms", total_sent, millis() - start_time);
 
   // Receive the response
   char buffer[512];
   memset(buffer, 0, sizeof(buffer));
-  ESP_LOGI(TAG, "Waiting for response...");
+  ESP_LOGD(TAG, "Waiting for response...");
   int bytes_received = recv(sock, buffer, sizeof(buffer) - 1, 0);
   if (bytes_received < 0) {
     ESP_LOGE(TAG, "Failed to receive response: %d (%s)", errno, strerror(errno));
@@ -109,7 +109,7 @@ bool send_ssc_command(const std::string &ipv6, const std::string &command, std::
   response = std::string(buffer, bytes_received);
   success = true;
   
-  ESP_LOGI(TAG, "Received %d bytes in %u ms: %s", 
+  ESP_LOGD(TAG, "Received %d bytes in %u ms: %s", 
           bytes_received, millis() - start_time, response.c_str());
   
   // Always close the socket

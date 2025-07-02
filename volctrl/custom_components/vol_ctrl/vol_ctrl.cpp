@@ -13,6 +13,12 @@ namespace vol_ctrl {
 
 static const char *const TAG = "vol_ctrl";
 
+enum class LoopState {
+  WAIT_FOR_WIFI,
+  MAIN_LOOP,
+};
+LoopState loop_state = LoopState::WAIT_FOR_WIFI;
+
 void VolCtrl::setup() {
   ESP_LOGCONFIG(TAG, "Setting up Volume Control...");
   
@@ -60,23 +66,22 @@ std::string get_datetime_string() {
   return "--:-- --- --";
 }
 
-// This loop() loops only occasionally. there are inner loops that loop in various frequencies
+// This loop() logically loops only occasionally. there are inner loops that loop in various frequencies. Variable loop_state tells what inner loop to enter. It is necessary to exit loop swiftly else RTOS will restart the ESP.
 void VolCtrl::loop() {
-  uint32_t now = millis() - 5000 + 1000;
+  uint32_t now = millis();
   bool wifi_connected = wifi::global_wifi_component->is_connected();
   
   // Wait for wifi to connect before proceeding
-  while (!wifi_connected) {
-    // sleep 1 second to avoid busy loop
-    delay(1000);
-    esphome::vol_ctrl::display::update_status_message(this->tft_, "Connecting to WiFi");
+  if (!wifi_connected) {
+      esphome::vol_ctrl::display::update_status_message(this->tft_, "Connecting to WiFi");
+      esphome::vol_ctrl::display::update_wifi_status(this->tft_, wifi_connected);
+      esphome::delay(1000);
+      return;  // exit loop() to satisfy ESP watchdog timer
   }
-  esphome::vol_ctrl::display::update_status_message(this->tft_, "WiFi connected");
-  esphome::vol_ctrl::display::update_wifi_status(this->tft_, 60, 17, wifi_connected);
 
   // Loop as frequently as possible to keep the UI responsive
   // Rotary encoder changes are read by esphome, see yaml lambda
-  while (wifi_connected) {  // TODO this handles case when not in menu mode
+  if (loop_state == LoopState::WAIT_FOR_WIFI) {  // TODO this handles case when not in menu mode
     std::map<std::string, DeviceState>& device_states = const_cast<std::map<std::string, DeviceState>&>(network::get_device_states());  // get list of devices and its states
 
     // 500ms after last encoder change, we can process the accumulated changes
@@ -91,13 +96,12 @@ void VolCtrl::loop() {
       else
         break;
     }
-    if (now - this->last_volume_change_ >= 500 && !in_menu_) {  // reset
+    if (now - this->last_volume_change_ >= 2000 && !in_menu_) {  // reset
       this->last_volume_change_ = now;
     }
 
     // every 5 seconds, we check the device states and update the display if needed
-    now = millis();
-    if (now - this->last_device_check_ > 5000) {
+    if (now - this->last_device_check_ > 4000) {
       bool is_up_changed = false;
       bool standby_countdown_changed = false;
       bool volume_changed = false;
@@ -109,7 +113,7 @@ void VolCtrl::loop() {
         DeviceState &state = entry.second;
         network::DeviceVolStdbyData current_device_data;
         bool is_up = network::get_device_data(ipv6, current_device_data);
-        if (state.is_up != is_up) is_up_changed = true;
+        is_up_changed |= state.set_is_up(is_up);
         standby_countdown_changed = state.set_standby_countdown(current_device_data.standby_countdown);
         volume_changed = state.set_volume(current_device_data.volume);
         mute_changed = state.set_mute(current_device_data.mute);
@@ -126,11 +130,10 @@ void VolCtrl::loop() {
         esphome::vol_ctrl::display::update_volume_display(this->tft_, last_state->volume);
       if (mute_changed && last_state)
         esphome::vol_ctrl::display::update_mute_status(this->tft_, last_state->muted);
-      esphome::vol_ctrl::display::update_status_message(this->tft_, "Press for menu");
+      esphome::vol_ctrl::display::update_status_message(this->tft_, "Long-press for menu");
+      esphome::vol_ctrl::display::update_wifi_status(this->tft_, wifi_connected);
     }
-
   }
-
 }  // end of loop()
 
 // Handle volume change based on encoder ticks. It can be positive or negative.
@@ -405,7 +408,12 @@ void VolCtrl::process_encoder_change(int diff) {
     }
     return;
   }
-  
+
+  if (fabs(diff) > 10) {
+    return;  // Ignore very large changes
+  }
+  this->last_volume_change_ = millis();  // volume will commit since last encoder change
+  this->last_device_check_ = millis();  // reset device check timer to force update display
   // Not in menu mode, so process volume change
   std::map<std::string, DeviceState>& device_states = const_cast<std::map<std::string, DeviceState>&>(network::get_device_states());  // get list of devices and its states
   for (auto &entry : device_states) { 
@@ -423,7 +431,7 @@ void VolCtrl::process_encoder_change(int diff) {
     }
     requested_vol = requested_vol + diff;  // TODO handle sensitivity well here
     state.set_requested_volume(requested_vol);
-    esphome::vol_ctrl::display::update_volume_display(this->tft_, requested_vol);
+    esphome::vol_ctrl::display::update_volume_display(this->tft_, requested_vol, true);
   }
 }
 

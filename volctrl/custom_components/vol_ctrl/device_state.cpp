@@ -10,6 +10,16 @@ namespace esphome
         const char ROT_SYMBOLS[] = {'|', '/', '-', '\\'};
         const int ROT_SYMBOLS_LEN = 4;
 
+        bool DeviceState::set_is_up(bool new_is_up)
+        {
+            if (this->is_up != new_is_up)
+            {
+                this->is_up = new_is_up;
+                return true;
+            }
+            return false;
+        }
+
         bool DeviceState::set_standby_countdown(int new_standby_countdown)
         {
             bool standby_countdown_change = false;
