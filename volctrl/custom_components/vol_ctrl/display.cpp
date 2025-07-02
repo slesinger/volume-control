@@ -189,7 +189,7 @@ void update_volume_display(TFT_eSPI *tft, float volume, bool user_adjusting) {  
   tft->drawString(buf, tft->width()/2, y);
 }
 
-void update_mute_status(TFT_eSPI *tft, bool muted, bool prev_muted) {
+void update_mute_status(TFT_eSPI *tft, bool muted) {
   if (!muted) return; // Avoid drawing mute sign if not muted
   
   // Draw new mute icon if muted
