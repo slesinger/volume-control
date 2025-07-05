@@ -25,7 +25,6 @@ esphome:
       - -Isrc/esphome/components/ota
       - -Isrc/esphome/components/psram
       - -Isrc/esphome/components/wifi
-      - -Isrc/esphome/components/vol_ctrl # Your custom component
       - -Isrc/esphome/components/spi              # The MOST IMPORTANT one
 
 esp32:
@@ -51,7 +50,8 @@ logger:
 psram:
 
 api:
-  password: !secret api_key
+  encryption:
+    key: !secret encryption_key
   services:
     - service: set_volume
       variables:
