@@ -58,15 +58,12 @@ api:
         level: float
       then:
         - lambda: 'id(my_vol_ctrl).set_volume_from_hass(level);'
-    
     - service: toggle_mute
       then:
         - lambda: 'id(my_vol_ctrl).toggle_mute();'
-    
     - service: volume_up
       then:
         - lambda: 'id(my_vol_ctrl).volume_change_from_hass(1);'
-    
     - service: volume_down
       then:
         - lambda: 'id(my_vol_ctrl).volume_change_from_hass(-1);'
@@ -144,3 +141,14 @@ binary_sensor:
     on_release:
       then:
         - lambda: 'id(my_vol_ctrl).button_released();'
+
+i2s_audio:
+  i2s_lrclk_pin: GPIO13  # fake pin
+  i2s_bclk_pin: GPIO2  # dake pin
+
+media_player:
+  - platform: i2s_audio
+    name: "Volume Control"
+    dac_type: external
+    i2s_dout_pin: GPIO12  # fake pin
+
