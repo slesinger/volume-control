@@ -27,6 +27,11 @@ esphome:
       - -Isrc/esphome/components/wifi
       - -Isrc/esphome/components/spi              # The MOST IMPORTANT one
 
+globals:
+  - id: updating_from_sensor
+    type: bool
+    initial_value: 'false'
+
 esp32:
   board: lolin32
   framework:
@@ -61,12 +66,36 @@ api:
     - service: toggle_mute
       then:
         - lambda: 'id(my_vol_ctrl).toggle_mute();'
+    - service: mute
+      then:
+        - lambda: 'id(my_vol_ctrl).mute();'
+    - service: unmute
+      then:
+        - lambda: 'id(my_vol_ctrl).unmute();'
     - service: volume_up
+      variables:
+        diff: float
       then:
-        - lambda: 'id(my_vol_ctrl).volume_change_from_hass(1);'
+        - lambda: 'id(my_vol_ctrl).volume_change_from_hass(diff);'
     - service: volume_down
+      variables:
+        diff: float
       then:
-        - lambda: 'id(my_vol_ctrl).volume_change_from_hass(-1);'
+        - lambda: 'id(my_vol_ctrl).volume_change_from_hass(-diff);'
+    - service: cycle_input
+      then:
+        - lambda: 'id(my_vol_ctrl).cycle_input();'
+    - service: set_input
+      variables:
+        input: string
+      then:
+        - lambda: 'id(my_vol_ctrl).set_input(input);'
+    - service: pause
+      then:
+        - lambda: 'id(my_vol_ctrl).pause();'
+    - service: next
+      then:
+        - lambda: 'id(my_vol_ctrl).next();'
 
 ota:
   platform: esphome
@@ -124,6 +153,48 @@ sensor:
               last_value = x;
             }
 
+  - platform: template
+    name: "Current Volume"
+    id: current_volume_sensor
+    unit_of_measurement: "dB"
+    accuracy_decimals: 1
+    state_class: measurement
+    device_class: sound_pressure
+    lambda: |-
+      auto device_states = id(my_vol_ctrl).get_device_states();
+      for (const auto& entry : device_states) {
+        const auto& state = entry.second;
+        float volume = state.volume;
+        if (volume >= 0.0f) {
+          return volume;
+        }
+      }
+      return {};
+    update_interval: 2s
+    on_value:
+      then:
+        - if:
+            condition:
+              lambda: 'return !isnan(x) && x >= 0.0;'
+            then:
+              - lambda: |-
+                  // Convert volume from dB scale (0-60) to Home Assistant's 0.0-1.0 range
+                  float volume_fraction = x / 60.0f;
+                  if (volume_fraction > 1.0f) volume_fraction = 1.0f;
+                  if (volume_fraction < 0.0f) volume_fraction = 0.0f;
+                  
+                  // Update the media player's volume if it's different from current
+                  auto current_volume = id(media_player_volume_control)->volume;
+                  if (isnan(current_volume) || fabs(current_volume - volume_fraction) > 0.01f) {
+                    ESP_LOGI("volume_sync", "Updating media player volume: %.3f (from %.1f dB)", volume_fraction, x);
+                    id(updating_from_sensor) = true;
+                    auto call = id(media_player_volume_control)->make_call();
+                    call.set_volume(volume_fraction);
+                    call.perform();
+                  }
+              - delay: 100ms
+              - lambda: 'id(updating_from_sensor) = false;'
+
 binary_sensor:
   - platform: gpio
     pin: 
@@ -142,13 +213,114 @@ binary_sensor:
       then:
         - lambda: 'id(my_vol_ctrl).button_released();'
 
+  - platform: gpio
+    pin:
+      number: GPIO26
+      mode: INPUT_PULLUP
+    name: "Push Button A"
+    id: push_button_a
+    filters:
+      - invert:
+      - delayed_on: 50ms
+      - delayed_off: 50ms
+
+  - platform: gpio
+    pin:
+      number: GPIO27
+      mode: INPUT_PULLUP
+    name: "Push Button B"
+    id: push_button_b
+    filters:
+      - invert:
+      - delayed_on: 50ms
+      - delayed_off: 50ms
+
+  - platform: gpio
+    pin:
+      number: GPIO14
+      mode: INPUT_PULLUP
+    name: "Push Button C"
+    id: push_button_c
+    filters:
+      - invert:
+      - delayed_on: 50ms
+      - delayed_off: 50ms
+
+  - platform: template
+    name: "Speaker Muted"
+    id: speaker_muted_sensor
+    lambda: |-
+      auto device_states = id(my_vol_ctrl).get_device_states();
+      for (const auto& entry : device_states) {
+        const auto& state = entry.second;
+        return state.muted;
+      }
+      return false;
+
+button:
+  - platform: template
+    name: "Button A"
+    id: button_a
+    on_press:
+      - lambda: 'id(my_vol_ctrl).cycle_input();'
+
+  - platform: template
+    name: "Button B"
+    id: button_b
+    on_press:
+      - lambda: 'id(my_vol_ctrl).pause();'
+
+  - platform: template
+    name: "Button C"
+    id: button_c
+    on_press:
+      - lambda: 'id(my_vol_ctrl).next();'
+
+
+
 i2s_audio:
   i2s_lrclk_pin: GPIO13  # fake pin
-  i2s_bclk_pin: GPIO2  # dake pin
+  i2s_bclk_pin: GPIO21  # fake pin
 
 media_player:
   - platform: i2s_audio
     name: "Volume Control"
     dac_type: external
-    i2s_dout_pin: GPIO12  # fake pin
+    i2s_dout_pin: GPIO22  # fake pin
+    id: media_player_volume_control
+    on_state:
+      - if:
+          condition:
+            lambda: |-
+              // Only process if volume is valid and this is not a programmatic update from our own sensor
+              return !id(updating_from_sensor) && !isnan(id(media_player_volume_control)->volume) && id(media_player_volume_control)->volume >= 0.0;
+          then:
+            - lambda: |-
+                // Convert volume from 0.0-1.0 range to 0-60 range (dB scale), it supports 120 but is set to max 60 to avoid mistakes
+                float volume_fraction = id(media_player_volume_control)->volume;
+                float volume_db = volume_fraction * 60.0f;
+                ESP_LOGI("media_player", "Volume changed from Home Assistant: %.3f (fraction) -> %.1f (dB)", volume_fraction, volume_db);
+                id(my_vol_ctrl).set_volume_from_hass(volume_db);
+
+number:
+  - platform: template
+    name: "Volume Level"
+    id: volume_level_number
+    min_value: 0
+    max_value: 60
+    step: 1
+    unit_of_measurement: "dB"
+    mode: slider
+    lambda: |-
+      auto device_states = id(my_vol_ctrl).get_device_states();
+      for (const auto& entry : device_states) {
+        const auto& state = entry.second;
+        if (state.volume >= 0.0f) {
+          return state.volume;
+        }
+      }
+      return {};
+    set_action:
+      then:
+        - lambda: 'id(my_vol_ctrl).set_volume_from_hass(x);'
 

@@ -44,6 +44,16 @@ namespace esphome
             }
         }
 
+        float DeviceState::get_last_sent_volume()
+        {
+            return this->last_sent_volume;
+        }
+
+        void DeviceState::set_last_sent_volume(float new_last_sent_volume)
+        {
+            this->last_sent_volume = new_last_sent_volume;
+        }
+
         float DeviceState::get_volume()
         {
             return this->volume;

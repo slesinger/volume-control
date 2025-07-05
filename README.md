@@ -147,6 +147,29 @@ This section shows menu structure and how to navigate through it.
   7.3. Display timeout to stop backlight
   7.4. Set ESP deep sleep timeout (to save power)
 
+# Home Assistant Integration
+
+## Invoking services
+
+### Set Volume Level
+
+```yaml
+action: esphome.volume_control_set_volume
+data:
+  level: 40
+```
+
+### Toggle Mute
+
+```yaml
+action: esphome.volume_control_toggle_mute
+
+### Volume Up/Down
+
+```yaml
+action: esphome.volume_control_volume_up
+```
+
 # Resources
 
 ## Senheiser Sound Control Protocol (SSP)

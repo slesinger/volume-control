@@ -1,5 +1,6 @@
 #include "network.h"
 #include "utils.h"
+#include "wiim_pro.h"
 #include "esphome/core/log.h"
 #include <lwip/sockets.h>
 #include <lwip/inet.h>
@@ -8,9 +9,11 @@
 #include <arpa/inet.h>
 #include <cstring>
 #include <map>
+#include <vector>
 #include "esphome/core/hal.h"
 #include <lwip/netif.h>
 #include <lwip/ip_addr.h>
+#include <esp_http_client.h>
 
 namespace esphome {
 namespace vol_ctrl {
@@ -200,6 +203,10 @@ void init() {
   // Log all IPv6 addresses at startup
   log_ipv6_addresses();
   
+  // Initialize WiiM Pro controller
+  static WiimPro wiim_pro;
+  wiim_pro.init();
+  
   // Here you would normally load devices from persistent storage
   // For now, hardcoding the known devices from the original code
   register_device("Left-6473470117", "2a00:1028:8390:75ee:2a36:38ff:fe61:25b9");
@@ -208,6 +215,11 @@ void init() {
   ESP_LOGI(TAG, "Network module initialized with %d devices", device_map.size());
 }
 
+// Get WiiM Pro instance
+WiimPro& get_wiim_pro() {
+  static WiimPro wiim_pro;
+  return wiim_pro;
+}
 }  // namespace network
 }  // namespace vol_ctrl
 }  // namespace esphome

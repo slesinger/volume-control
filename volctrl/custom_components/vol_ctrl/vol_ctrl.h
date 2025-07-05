@@ -30,8 +30,16 @@ class VolCtrl : public Component, public spi::SPIDevice<spi::BIT_ORDER_MSB_FIRST
   void button_pressed();
   void button_released();
   void toggle_mute();
+  void mute();
+  void unmute();
   void enter_menu();
   void exit_menu();
+  
+  // Media control methods
+  void pause();
+  void next();
+  void cycle_input();
+  void set_input(const std::string &input);
   
   // Set backlight control pin
   void set_backlight_pin(output::FloatOutput *backlight_pin) { backlight_pin_ = backlight_pin; }

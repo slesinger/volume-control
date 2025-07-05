@@ -82,17 +82,21 @@ void VolCtrl::loop() {
 
   // Loop as frequently as possible to keep the UI responsive
   // Rotary encoder changes are read by esphome, see yaml lambda
-  if (loop_state == LoopState::WAIT_FOR_WIFI) {  // TODO this handles case when not in menu mode
+  if (loop_state == LoopState::WAIT_FOR_WIFI) {
     std::map<std::string, DeviceState>& device_states = const_cast<std::map<std::string, DeviceState>&>(network::get_device_states());  // get list of devices and its states
 
     // 500ms after last encoder change, we can process the accumulated changes
     for (auto &entry : device_states) {
       DeviceState &state = entry.second;
       float requested_vol = state.get_requested_volume();
-      if (requested_vol > 0.0f && now - this->last_volume_change_ >= 500 && !in_menu_) {  // there was some rotary change
-        const std::string &ipv6 = entry.first;
-        volume_change(ipv6, requested_vol);
-        state.set_requested_volume(-1.0f);
+      float last_sent_vol = state.get_last_sent_volume();
+      if (requested_vol > 0.0f && now - this->last_volume_change_ >= 300 && !in_menu_) {  // there was some rotary change
+        // Only call volume_change if requested volume is different from last sent volume
+        if (fabs(requested_vol - last_sent_vol) > 1e-4) {
+          const std::string &ipv6 = entry.first;
+          volume_change(ipv6, requested_vol);
+          state.set_last_sent_volume(requested_vol);
+        }
       }
       else
         break;
@@ -112,6 +116,7 @@ void VolCtrl::loop() {
       for (auto &entry : device_states) {  // for every known device
         const std::string &ipv6 = entry.first;
         DeviceState &state = entry.second;
+        state.set_requested_volume(-1.0f);
         network::DeviceVolStdbyData current_device_data;
         bool is_up = network::get_device_data(ipv6, current_device_data);
         is_up_changed |= state.set_is_up(is_up);
@@ -223,6 +228,24 @@ void VolCtrl::toggle_mute() {
     }
   }
   
+}
+
+void VolCtrl::mute() {
+  ESP_LOGI(TAG, "Muting all speakers");
+  std::map<std::string, DeviceState>& device_states = const_cast<std::map<std::string, DeviceState>&>(network::get_device_states());
+  for (auto &entry : device_states) {
+    const std::string &ipv6 = entry.first;
+    network::set_device_mute(ipv6, true);
+  }
+}
+
+void VolCtrl::unmute() {
+  ESP_LOGI(TAG, "Unmuting all speakers");
+  std::map<std::string, DeviceState>& device_states = const_cast<std::map<std::string, DeviceState>&>(network::get_device_states());
+  for (auto &entry : device_states) {
+    const std::string &ipv6 = entry.first;
+    network::set_device_mute(ipv6, false);
+  }
 }
 
 void VolCtrl::enter_menu() {
@@ -368,6 +391,7 @@ void VolCtrl::set_volume_from_hass(float level) {
     DeviceState &state = entry.second;
     const std::string &ipv6 = entry.first;
     volume_change(ipv6, level);
+    state.set_last_sent_volume(level);
   }
 }
 
@@ -422,6 +446,30 @@ void VolCtrl::process_encoder_change(int diff) {
     state.set_requested_volume(requested_vol);
     esphome::vol_ctrl::display::update_volume_display(this->tft_, requested_vol, true);
   }
+}
+
+void VolCtrl::pause() {
+  ESP_LOGI(TAG, "Pause command - not implemented for KH speakers");
+  // KH speakers don't have pause functionality as they are monitors
+  // This could be extended to control connected audio sources if needed
+}
+
+void VolCtrl::next() {
+  ESP_LOGI(TAG, "Next command - not implemented for KH speakers");
+  // KH speakers don't have track control functionality as they are monitors
+  // This could be extended to control connected audio sources if needed
+}
+
+void VolCtrl::cycle_input() {
+  ESP_LOGI(TAG, "Cycle input command - not implemented for KH speakers");
+  // KH speakers typically have fixed inputs
+  // This could be extended to control input selection if the speakers support it
+}
+
+void VolCtrl::set_input(const std::string &input) {
+  ESP_LOGI(TAG, "Set input to: %s - not implemented for KH speakers", input.c_str());
+  // KH speakers typically have fixed inputs
+  // This could be extended to control input selection if the speakers support it
 }
 
 }  // namespace vol_ctrl
