@@ -46,7 +46,7 @@ network:
     min_ipv6_addr_count: 2
 
 logger:
-  level: DEBUG
+  level: INFO
   # Available levels: NONE, ERROR, WARN, INFO, DEBUG, VERBOSE
   # Set to NONE to completely disable logging
   # Set to ERROR for minimal logging
@@ -104,6 +104,9 @@ api:
         brightness: int
       then:
         - lambda: 'id(my_vol_ctrl).set_display_brightness(brightness);'
+    - service: deep_sleep
+      then:
+        - lambda: 'id(my_vol_ctrl).deep_sleep();'
 
 ota:
   platform: esphome

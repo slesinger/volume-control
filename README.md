@@ -14,12 +14,16 @@ For DSP enabled speakers that can be controlled over network IPv6.
 - Display speaker settings
 - Set parametric equalizer settings
 - Works with Home Assistant
+- 3 configurable buttons (e.g. input select, pause/play, next song)
+- works with Wii Pro
+- deep sleep (rotary push button to wake up)
 
 It uses Senheiser Sound Control Protocol (SSP) to control the volume of the speakers and reading and setting parameters.
 
 ## TODO
 
-tlacitko
+deep sleep - switch of display vcc
+make display off during seep sleep
 zabudovat hw do top-case
 deepsleep kdyz repraky usnou
 discover wiim and display input

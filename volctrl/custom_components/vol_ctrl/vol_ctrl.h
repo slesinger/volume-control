@@ -51,6 +51,9 @@ class VolCtrl : public Component, public spi::SPIDevice<spi::BIT_ORDER_MSB_FIRST
   void set_display_brightness(int brightness);
   int get_display_brightness() const { return backlight_level_; }
   
+  // Deep sleep functionality
+  void deep_sleep();
+  
   // Menu navigation methods
   void menu_up();
   void menu_down();

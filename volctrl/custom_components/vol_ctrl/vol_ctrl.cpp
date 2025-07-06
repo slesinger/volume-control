@@ -8,6 +8,7 @@
 #include "utils.h"
 #include "wiim_pro.h"
 #include "esphome/core/hal.h"
+#include <esp_sleep.h>
 
 namespace esphome {
 namespace vol_ctrl {
@@ -573,6 +574,35 @@ void VolCtrl::exit_brightness_adjustment() {
     // Redraw the menu screen
     esphome::vol_ctrl::display::draw_menu_screen(this->tft_, menu_level_, menu_position_, menu_items_count_);
   }
+}
+
+void VolCtrl::deep_sleep() {
+  ESP_LOGI(TAG, "Entering deep sleep mode...");
+  
+  // Turn off the display
+  if (this->tft_ != nullptr) {
+    this->tft_->fillScreen(TFT_BLACK);
+    this->tft_->writecommand(0x10); // Enter sleep mode
+  }
+  
+  // Turn off backlight
+  if (this->backlight_pin_ != nullptr) {
+    ESP_LOGI(TAG, "Turning off backlight");
+    this->backlight_pin_->set_level(0.0);
+  }
+  
+  // Configure wake-up source - wake up on GPIO25 (encoder button) press
+  // GPIO25 is the encoder button according to the YAML config
+  esp_sleep_enable_ext0_wakeup(GPIO_NUM_25, 0); // Wake on LOW (button pressed, considering pullup)
+  
+  ESP_LOGI(TAG, "Configured wake-up on GPIO25 (encoder button)");
+  ESP_LOGI(TAG, "Starting deep sleep now...");
+  
+  // Small delay to ensure log message is sent
+  delay(100);
+  
+  // Enter deep sleep
+  esp_deep_sleep_start();
 }
 
 }  // namespace vol_ctrl
