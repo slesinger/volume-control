@@ -453,13 +453,13 @@ void VolCtrl::process_encoder_change(int diff) {
 }
 
 void VolCtrl::pause() {
-  ESP_LOGI(TAG, "Pause command received");
+  ESP_LOGI(TAG, "Pause/Play toggle command received");
   
-  // Try to pause WiiM devices first
-  if (wiim_pro_.pause()) {
-    ESP_LOGI(TAG, "Successfully sent pause command to WiiM device");
+  // Try to pause/play toggle WiiM devices first
+  if (wiim_pro_.pause_play_toggle()) {
+    ESP_LOGI(TAG, "Successfully sent pause/play toggle command to WiiM device");
   } else {
-    ESP_LOGI(TAG, "Pause command - not implemented for KH speakers");
+    ESP_LOGI(TAG, "Pause/Play toggle command - not implemented for KH speakers");
     // KH speakers don't have pause functionality as they are monitors
     // This could be extended to control connected audio sources if needed
   }

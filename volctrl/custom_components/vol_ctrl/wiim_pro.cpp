@@ -14,11 +14,33 @@ static const char *const TAG = "vol_ctrl.wiim_pro";
 
 const std::string WiimPro::DEFAULT_IP = "192.168.1.245";
 
-WiimPro::WiimPro() : ip_address_(DEFAULT_IP) {
+WiimPro::WiimPro() : ip_address_(DEFAULT_IP), upnp_client_(nullptr) {
 }
 
 void WiimPro::init() {
     ESP_LOGI(TAG, "WiimPro::init() called with default IP: %s", ip_address_.c_str());
+    init_upnp_client();
+}
+
+void WiimPro::set_ip_address(const std::string& ip) {
+    ip_address_ = ip;
+    // Reinitialize UPnP client with new IP
+    init_upnp_client();
+}
+
+bool WiimPro::init_upnp_client() {
+    ESP_LOGI(TAG, "Initializing UPnP client for IP: %s", ip_address_.c_str());
+    
+    upnp_client_.reset(new UPnPClient(ip_address_));
+    
+    if (!upnp_client_->init()) {
+        ESP_LOGE(TAG, "Failed to initialize UPnP client");
+        upnp_client_.reset();
+        return false;
+    }
+    
+    ESP_LOGI(TAG, "UPnP client initialized successfully");
+    return true;
 }
 
 std::vector<WiimDevice> WiimPro::scan() {
@@ -108,34 +130,113 @@ bool WiimPro::make_http_request(const std::string& url, std::string& response) {
     }
 }
 
+bool WiimPro::pause_play_toggle() {
+    ESP_LOGI(TAG, "Toggling play/pause on WiiM device at %s", ip_address_.c_str());
+    
+    if (!upnp_client_) {
+        ESP_LOGE(TAG, "UPnP client not initialized");
+        return false;
+    }
+    
+    // Get current transport state
+    TransportState current_state = upnp_client_->get_transport_state();
+    
+    ESP_LOGI(TAG, "Current transport state: %d", static_cast<int>(current_state));
+    
+    // Decide action based on current state (following wiimplay approach)
+    switch (current_state) {
+        case TransportState::PLAYING:
+        case TransportState::TRANSITIONING:
+            ESP_LOGI(TAG, "Currently playing, sending pause command");
+            return upnp_client_->pause();
+            
+        case TransportState::PAUSED_PLAYBACK:
+        case TransportState::STOPPED:
+            ESP_LOGI(TAG, "Currently paused/stopped, sending play command");
+            return upnp_client_->play();
+            
+        case TransportState::NO_MEDIA_PRESENT:
+            ESP_LOGW(TAG, "No media present, cannot toggle playback");
+            return false;
+            
+        case TransportState::UNKNOWN:
+        default:
+            ESP_LOGW(TAG, "Unknown transport state, attempting play command");
+            return upnp_client_->play();
+    }
+}
+
+bool WiimPro::play() {
+    ESP_LOGI(TAG, "Sending play command to WiiM device at %s", ip_address_.c_str());
+    
+    if (!upnp_client_) {
+        ESP_LOGE(TAG, "UPnP client not initialized");
+        return false;
+    }
+    
+    return upnp_client_->play();
+}
+
 bool WiimPro::pause() {
     ESP_LOGI(TAG, "Sending pause command to WiiM device at %s", ip_address_.c_str());
     
-    std::string url = "https://" + ip_address_ + "/httpapi.asp?command=setPlayerCmd:pause";
-    std::string response;
-    
-    if (make_http_request(url, response)) {
-        ESP_LOGD(TAG, "Pause command sent successfully, response: %s", response.c_str());
-        return response.find("OK") != std::string::npos;
+    if (!upnp_client_) {
+        ESP_LOGE(TAG, "UPnP client not initialized");
+        return false;
     }
     
-    ESP_LOGE(TAG, "Failed to send pause command");
-    return false;
+    return upnp_client_->pause();
+}
+
+bool WiimPro::stop() {
+    ESP_LOGI(TAG, "Sending stop command to WiiM device at %s", ip_address_.c_str());
+    
+    if (!upnp_client_) {
+        ESP_LOGE(TAG, "UPnP client not initialized");
+        return false;
+    }
+    
+    return upnp_client_->stop();
+}
+
+bool WiimPro::previous() {
+    ESP_LOGI(TAG, "Sending previous command to WiiM device at %s", ip_address_.c_str());
+    
+    if (!upnp_client_) {
+        ESP_LOGE(TAG, "UPnP client not initialized");
+        return false;
+    }
+    
+    return upnp_client_->previous();
+}
+
+TransportState WiimPro::get_transport_state() {
+    if (!upnp_client_) {
+        ESP_LOGE(TAG, "UPnP client not initialized");
+        return TransportState::UNKNOWN;
+    }
+    
+    return upnp_client_->get_transport_state();
+}
+
+bool WiimPro::get_transport_info(TransportInfo& info) {
+    if (!upnp_client_) {
+        ESP_LOGE(TAG, "UPnP client not initialized");
+        return false;
+    }
+    
+    return upnp_client_->get_transport_info(info);
 }
 
 bool WiimPro::next() {
     ESP_LOGI(TAG, "Sending next command to WiiM device at %s", ip_address_.c_str());
     
-    std::string url = "https://" + ip_address_ + "/httpapi.asp?command=setPlayerCmd:next";
-    std::string response;
-    
-    if (make_http_request(url, response)) {
-        ESP_LOGD(TAG, "Next command sent successfully, response: %s", response.c_str());
-        return response.find("OK") != std::string::npos;
+    if (!upnp_client_) {
+        ESP_LOGE(TAG, "UPnP client not initialized");
+        return false;
     }
     
-    ESP_LOGE(TAG, "Failed to send next command");
-    return false;
+    return upnp_client_->next();
 }
 
 bool WiimPro::cycle_input() {
@@ -176,7 +277,7 @@ bool WiimPro::set_input(const std::string& input) {
         return false;
     }
     
-    std::string url = "https://" + ip_address_ + "/httpapi.asp?command=setPlayerCmd:switchmode:" + wiim_input;
+    std::string url = "http://" + ip_address_ + "/httpapi.asp?command=setPlayerCmd:switchmode:" + wiim_input;
     std::string response;
     
     if (make_http_request(url, response)) {
