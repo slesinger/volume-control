@@ -29,6 +29,7 @@ namespace esphome
             // Menu drawing functions
             void draw_menu_item_highlight(TFT_eSPI *tft, int position, int prev_position);
             void draw_menu_screen(TFT_eSPI *tft, int menu_level, int menu_position, int menu_items_count);
+            void draw_brightness_adjustment_screen(TFT_eSPI *tft, int brightness);
 
             // Get screen regions for partial updates
             struct ScreenRegion

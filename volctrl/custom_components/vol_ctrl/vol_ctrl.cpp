@@ -198,6 +198,12 @@ void VolCtrl::button_pressed() {
 }
 
 void VolCtrl::button_released() {
+  // If in brightness adjustment mode, exit it
+  if (adjusting_brightness_) {
+    exit_brightness_adjustment();
+    return;
+  }
+  
   uint32_t press_duration = millis() - button_press_time_;
   if (press_duration > 300) {  // long press threshold
     ESP_LOGI(TAG, "Long press detected (%ums)", press_duration);
@@ -273,6 +279,7 @@ void VolCtrl::exit_menu() {
     in_menu_ = false;
     menu_level_ = 0;
     menu_position_ = 0;
+    adjusting_brightness_ = false;  // Reset brightness adjustment mode
     
     // Force a full redraw when exiting menu
     update_whole_screen();
@@ -370,8 +377,19 @@ void VolCtrl::menu_select() {
           menu_level_ = 0;
           menu_position_ = 0;
           menu_items_count_ = 7;
+        } else if (menu_position_ == 1) {
+          // Volume step adjustment
+          // TODO: Implement volume step adjustment
+        } else if (menu_position_ == 2) {
+          // Backlight intensity adjustment
+          ESP_LOGI(TAG, "Entering brightness adjustment mode");
+          adjusting_brightness_ = true;
+          esphome::vol_ctrl::display::draw_brightness_adjustment_screen(this->tft_, backlight_level_);
+          return; // Don't redraw menu
+        } else if (menu_position_ == 3) {
+          // Display timeout adjustment
+          // TODO: Implement display timeout adjustment
         }
-        // TODO: Implement other volume settings submenu items
         break;
     }
     ESP_LOGI("vol_ctrl", "Menu: level=%d, position=%d, items=%d", menu_level_, menu_position_, menu_items_count_);
@@ -415,6 +433,23 @@ void VolCtrl::volume_change_from_hass(float diff) {
 }
 
 void VolCtrl::process_encoder_change(int diff) {
+  // Handle brightness adjustment mode
+  if (adjusting_brightness_) {
+    // Adjust brightness in steps of 5%
+    int new_brightness = backlight_level_ + (diff * 5);
+    
+    // Clamp to valid range
+    if (new_brightness < 0) new_brightness = 0;
+    if (new_brightness > 100) new_brightness = 100;
+    
+    // Only update if brightness actually changed
+    if (new_brightness != backlight_level_) {
+      set_display_brightness(new_brightness);
+      esphome::vol_ctrl::display::draw_brightness_adjustment_screen(this->tft_, backlight_level_);
+    }
+    return;
+  }
+  
   // Ignore encoder input when in menu
   if (in_menu_) {
     // Use encoder for menu navigation
@@ -504,6 +539,40 @@ std::string VolCtrl::get_current_input() {
   // Get current input from WiiM device
   std::string current_input = wiim_pro_.get_current_input();
   return current_input;
+}
+
+void VolCtrl::set_display_brightness(int brightness) {
+  // Clamp brightness to valid range (0-100%)
+  if (brightness < 0) brightness = 0;
+  if (brightness > 100) brightness = 100;
+  
+  backlight_level_ = brightness;
+  
+  // If backlight pin is configured, update the PWM output
+  if (this->backlight_pin_ != nullptr) {
+    // Convert percentage (0-100) to float range (0.0-1.0)
+    float level = brightness / 100.0f;
+    
+    ESP_LOGI(TAG, "Setting display brightness to %d%% (%.2f)", brightness, level);
+    this->backlight_pin_->set_level(level);
+  } else {
+    ESP_LOGW(TAG, "Backlight pin not configured, cannot set brightness");
+  }
+}
+
+void VolCtrl::exit_brightness_adjustment() {
+  if (adjusting_brightness_) {
+    ESP_LOGI(TAG, "Exiting brightness adjustment mode");
+    adjusting_brightness_ = false;
+    
+    // Return to volume settings submenu
+    menu_level_ = 1;
+    menu_position_ = 0;
+    menu_items_count_ = 7;
+    
+    // Redraw the menu screen
+    esphome::vol_ctrl::display::draw_menu_screen(this->tft_, menu_level_, menu_position_, menu_items_count_);
+  }
 }
 
 }  // namespace vol_ctrl

@@ -17,6 +17,32 @@ For DSP enabled speakers that can be controlled over network IPv6.
 
 It uses Senheiser Sound Control Protocol (SSP) to control the volume of the speakers and reading and setting parameters.
 
+## TODO
+
+tlacitko
+zabudovat hw do top-case
+deepsleep kdyz repraky usnou
+discover wiim and display input
+
+curl -X GET "https://192.168.1.245/httpapi.asp?command=getMetaInfo" -k | jq
+  % Total    % Received % Xferd  Average Speed   Time    Time     Time  Current
+                                 Dload  Upload   Total   Spent    Left  Speed
+100   297  100   297    0     0   3483      0 --:--:-- --:--:-- --:--:--  3494
+{
+  "metaData": {
+    "album": "Best of the Best",
+    "title": "Červená řeka",
+    "subtitle": "unknow",
+    "artist": "Helena Vondrackova",
+    "albumArtURI": "https://static.qobuz.com/images/covers/4a/hh/clin57z27hh4a_600.jpg",
+    "sampleRate": "44100",
+    "bitDepth": "16",
+    "bitRate": "unknow",
+    "trackId": "unknow"
+  }
+}
+
+
 ## Hardware
 
 - ESP32 Wemos Lolin32

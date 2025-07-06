@@ -1,4 +1,3 @@
-// ...existing code...
 #include "display.h"
 #include "device_state.h"
 #include <TFT_eSPI.h>
@@ -238,7 +237,7 @@ void draw_menu_screen(TFT_eSPI *tft, int menu_level, int menu_position, int menu
         tft->drawString("1. Volume step", MENU_LEFT, 70);
         tft->drawString("2. Backlight intensity", MENU_LEFT, 90);
         tft->drawString("3. Display timeout", MENU_LEFT, 110);
-        tft->drawString("4. Deep sleep timeout", MENU_LEFT, 90);
+        tft->drawString("4. Deep sleep timeout", MENU_LEFT, 130);
         break;
         
       default:
@@ -251,6 +250,50 @@ void draw_menu_screen(TFT_eSPI *tft, int menu_level, int menu_position, int menu
   
   // Draw highlight for current position
   draw_menu_item_highlight(tft, menu_position, -1);
+}
+
+void draw_brightness_adjustment_screen(TFT_eSPI *tft, int brightness) {
+  // Clear screen
+  tft->fillScreen(TFT_BLACK);
+  tft->setTextDatum(TL_DATUM); // Top-left alignment
+  
+  // Draw title
+  tft->setTextFont(4);
+  tft->setTextColor(TFT_ORANGE, TFT_BLACK);
+  tft->drawString("BRIGHTNESS", 10, 10);
+  
+  // Draw current brightness value
+  tft->setTextFont(6);
+  tft->setTextColor(TFT_YELLOW, TFT_BLACK);
+  char brightness_str[16];
+  snprintf(brightness_str, sizeof(brightness_str), "%d%%", brightness);
+  
+  // Center the brightness value
+  int text_width = tft->textWidth(brightness_str);
+  int x_pos = (tft->width() - text_width) / 2;
+  tft->drawString(brightness_str, x_pos, 80);
+  
+  // Draw progress bar
+  const int BAR_WIDTH = 200;
+  const int BAR_HEIGHT = 20;
+  const int BAR_X = (tft->width() - BAR_WIDTH) / 2;
+  const int BAR_Y = 150;
+  
+  // Draw bar outline
+  tft->drawRect(BAR_X, BAR_Y, BAR_WIDTH, BAR_HEIGHT, TFT_WHITE);
+  
+  // Fill bar based on brightness level
+  int fill_width = (BAR_WIDTH - 4) * brightness / 100;
+  if (fill_width > 0) {
+    tft->fillRect(BAR_X + 2, BAR_Y + 2, fill_width, BAR_HEIGHT - 4, TFT_YELLOW);
+  }
+  
+  // Draw instructions
+  tft->setTextFont(2);
+  tft->setTextColor(TFT_WHITE, TFT_BLACK);
+  tft->setTextDatum(TC_DATUM); // Top-center alignment
+  tft->drawString("Turn encoder to adjust", tft->width() / 2, 190);
+  tft->drawString("Press button to save", tft->width() / 2, 210);
 }
 
 }  // namespace display

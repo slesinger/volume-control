@@ -325,6 +325,8 @@ std::string WiimPro::get_current_input() {
                         return "Network";  // Spotify Connect (treat as Network)
                     case 32:
                         return "Network";  // TIDAL Connect (treat as Network)
+                    case 36:
+                        return "Network";  // Qobuz Connect (treat as Network)
                     default:
                         ESP_LOGW(TAG, "Unknown input mode value: %d, defaulting to Network", mode_value);
                         return "Network";

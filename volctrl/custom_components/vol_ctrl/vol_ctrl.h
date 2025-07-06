@@ -47,10 +47,15 @@ class VolCtrl : public Component, public spi::SPIDevice<spi::BIT_ORDER_MSB_FIRST
   void set_backlight_pin(output::FloatOutput *backlight_pin) { backlight_pin_ = backlight_pin; }
   void set_volume_step(float step) { volume_step_ = step; }
   
+  // Display brightness control (0-100%)
+  void set_display_brightness(int brightness);
+  int get_display_brightness() const { return backlight_level_; }
+  
   // Menu navigation methods
   void menu_up();
   void menu_down();
   void menu_select();
+  void exit_brightness_adjustment();
   
   // Direct volume setting for Home Assistant
   void set_volume_from_hass(float level);
@@ -80,6 +85,7 @@ class VolCtrl : public Component, public spi::SPIDevice<spi::BIT_ORDER_MSB_FIRST
   int menu_level_{0};  // 0 = main menu, 1 = submenu, etc.
   int menu_position_{0};
   int menu_items_count_{0};
+  bool adjusting_brightness_{false};  // Flag to indicate brightness adjustment mode
   float volume_step_{1.0f};  // Default 1dB steps
   
   // Display settings
