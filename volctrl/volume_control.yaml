@@ -332,7 +332,7 @@ select:
     options:
       - "Network"
       - "Bluetooth"
-      - "Line In"
+      - "Line-In"
       - "Optical"
     initial_option: "Network"
     set_action:
