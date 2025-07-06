@@ -277,7 +277,7 @@ bool WiimPro::set_input(const std::string& input) {
         return false;
     }
     
-    std::string url = "http://" + ip_address_ + "/httpapi.asp?command=setPlayerCmd:switchmode:" + wiim_input;
+    std::string url = "https://" + ip_address_ + "/httpapi.asp?command=setPlayerCmd:switchmode:" + wiim_input;
     std::string response;
     
     if (make_http_request(url, response)) {
@@ -287,6 +287,57 @@ bool WiimPro::set_input(const std::string& input) {
     
     ESP_LOGE(TAG, "Failed to send set input command");
     return false;
+}
+
+std::string WiimPro::get_current_input() {
+    std::string url = "https://" + ip_address_ + "/httpapi.asp?command=getPlayerStatus";
+    std::string response;
+    
+    if (make_http_request(url, response)) {
+        ESP_LOGD(TAG, "Get player status response: %s", response.c_str());
+        
+        // Parse the JSON response to find the current input mode
+        // Look for "mode":"XX" where XX is a numeric value
+        size_t mode_pos = response.find("\"mode\":\"");
+        if (mode_pos != std::string::npos) {
+            size_t start = mode_pos + 8; // Skip "mode":""
+            size_t end = response.find("\"", start);
+            
+            if (end != std::string::npos && end > start) {
+                std::string mode_str = response.substr(start, end - start);
+                int mode_value = std::atoi(mode_str.c_str());
+                
+                // Convert numeric mode to our standard input names according to WiiM API documentation
+                switch (mode_value) {
+                    case 10:
+                    case 11:
+                    case 16:
+                        return "Network";  // WiFi/Network modes (10-19)
+                    case 40:
+                        return "Line-In";  // AUX-In
+                    case 41:
+                        return "Bluetooth"; // BT
+                    case 43:
+                        return "Optical";  // Optical-In
+                    case 1:
+                        return "Network";  // AirPlay (treat as Network)
+                    case 31:
+                        return "Network";  // Spotify Connect (treat as Network)
+                    case 32:
+                        return "Network";  // TIDAL Connect (treat as Network)
+                    default:
+                        ESP_LOGW(TAG, "Unknown input mode value: %d, defaulting to Network", mode_value);
+                        return "Network";
+                }
+            }
+        }
+        
+        ESP_LOGW(TAG, "Could not parse mode from response: %s", response.c_str());
+    } else {
+        ESP_LOGE(TAG, "Failed to get player status");
+    }
+    
+    return "Network"; // Default fallback
 }
 
 }  // namespace vol_ctrl

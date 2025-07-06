@@ -90,6 +90,9 @@ api:
         input: string
       then:
         - lambda: 'id(my_vol_ctrl).set_input(input);'
+    - service: get_current_input
+      then:
+        - lambda: 'id(my_vol_ctrl).get_current_input();'
     - service: pause
       then:
         - lambda: 'id(my_vol_ctrl).pause();'
@@ -257,6 +260,15 @@ binary_sensor:
       }
       return false;
 
+text_sensor:
+  - platform: template
+    name: "Current Audio Input"
+    id: current_audio_input_sensor
+    lambda: |-
+      std::string current_input = id(my_vol_ctrl).get_current_input();
+      return current_input;
+    update_interval: 10s
+
 button:
   - platform: template
     name: "Button A"
@@ -328,13 +340,16 @@ select:
   - platform: template
     name: "Audio Input"
     id: audio_input_select
-    optimistic: true
+    optimistic: false
     options:
       - "Network"
       - "Bluetooth"
       - "Line-In"
       - "Optical"
-    initial_option: "Network"
+    lambda: |-
+      std::string current_input = id(my_vol_ctrl).get_current_input();
+      return current_input;
+    update_interval: 5s
     set_action:
       then:
         - lambda: 'id(my_vol_ctrl).set_input(x);'

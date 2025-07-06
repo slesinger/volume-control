@@ -40,6 +40,7 @@ public:
     // Input control (still using HTTP API as UPnP doesn't support this)
     bool cycle_input();
     bool set_input(const std::string& input);
+    std::string get_current_input();
     
     // State inquiry
     TransportState get_transport_state();

@@ -500,5 +500,11 @@ void VolCtrl::set_input(const std::string &input) {
   }
 }
 
+std::string VolCtrl::get_current_input() {
+  // Get current input from WiiM device
+  std::string current_input = wiim_pro_.get_current_input();
+  return current_input;
+}
+
 }  // namespace vol_ctrl
 }  // namespace esphome

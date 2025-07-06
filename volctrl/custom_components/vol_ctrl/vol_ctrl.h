@@ -41,6 +41,7 @@ class VolCtrl : public Component, public spi::SPIDevice<spi::BIT_ORDER_MSB_FIRST
   void next();
   void cycle_input();
   void set_input(const std::string &input);
+  std::string get_current_input();
   
   // Set backlight control pin
   void set_backlight_pin(output::FloatOutput *backlight_pin) { backlight_pin_ = backlight_pin; }
