@@ -2,12 +2,10 @@
 #include "utils.h"
 #include "esphome/core/log.h"
 #include "esphome/core/hal.h"
-#include <lwip/sockets.h>
-#include <lwip/inet.h>
-#include <sys/socket.h>
-#include <netinet/in.h>
-#include <arpa/inet.h>
+#include <HTTPClient.h>
+#include <WiFiClient.h>
 #include <cstring>
+#include <algorithm>
 
 namespace esphome {
 namespace vol_ctrl {
@@ -50,115 +48,13 @@ std::vector<WiimDevice> WiimPro::scan() {
 }
 
 bool WiimPro::send_multicast_search() {
-    int sock = socket(AF_INET, SOCK_DGRAM, 0);
-    if (sock < 0) {
-        ESP_LOGE(TAG, "Failed to create UDP socket: %s", strerror(errno));
-        return false;
-    }
-    
-    // Set socket to broadcast
-    int broadcast = 1;
-    if (setsockopt(sock, SOL_SOCKET, SO_BROADCAST, &broadcast, sizeof(broadcast)) < 0) {
-        ESP_LOGE(TAG, "Failed to set broadcast option: %s", strerror(errno));
-        close(sock);
-        return false;
-    }
-    
-    // Set timeout
-    struct timeval timeout;
-    timeout.tv_sec = 3;
-    timeout.tv_usec = 0;
-    setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
-    
-    // Prepare multicast address
-    struct sockaddr_in addr;
-    memset(&addr, 0, sizeof(addr));
-    addr.sin_family = AF_INET;
-    addr.sin_port = htons(1900);
-    inet_pton(AF_INET, "239.255.255.250", &addr.sin_addr);
-    
-    // Prepare M-SEARCH message
-    const char* msearch = 
-        "M-SEARCH * HTTP/1.1\r\n"
-        "HOST: 239.255.255.250:1900\r\n"
-        "MAN: \"ssdp:discover\"\r\n"
-        "ST: urn:schemas-upnp-org:device:MediaRenderer:1\r\n"
-        "MX: 3\r\n\r\n";
-    
-    // Send the search request
-    int sent = sendto(sock, msearch, strlen(msearch), 0, (struct sockaddr*)&addr, sizeof(addr));
-    if (sent < 0) {
-        ESP_LOGE(TAG, "Failed to send M-SEARCH: %s", strerror(errno));
-        close(sock);
-        return false;
-    }
-    
-    ESP_LOGD(TAG, "Sent M-SEARCH message, waiting for responses...");
-    close(sock);
-    return true;
+    ESP_LOGD(TAG, "UPnP discovery not implemented in this version");
+    return false;
 }
 
 std::vector<std::string> WiimPro::parse_ssdp_responses() {
     std::vector<std::string> locations;
-    
-    int sock = socket(AF_INET, SOCK_DGRAM, 0);
-    if (sock < 0) {
-        ESP_LOGE(TAG, "Failed to create UDP socket for receiving: %s", strerror(errno));
-        return locations;
-    }
-    
-    // Bind to listen for responses
-    struct sockaddr_in addr;
-    memset(&addr, 0, sizeof(addr));
-    addr.sin_family = AF_INET;
-    addr.sin_addr.s_addr = INADDR_ANY;
-    addr.sin_port = 0; // Let system choose port
-    
-    if (bind(sock, (struct sockaddr*)&addr, sizeof(addr)) < 0) {
-        ESP_LOGE(TAG, "Failed to bind socket: %s", strerror(errno));
-        close(sock);
-        return locations;
-    }
-    
-    // Set timeout for receiving
-    struct timeval timeout;
-    timeout.tv_sec = 3;
-    timeout.tv_usec = 0;
-    setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
-    
-    char buffer[2048];
-    uint32_t start_time = millis();
-    
-    while (millis() - start_time < 3000) { // 3 second timeout
-        memset(buffer, 0, sizeof(buffer));
-        struct sockaddr_in from;
-        socklen_t fromlen = sizeof(from);
-        
-        int bytes = recvfrom(sock, buffer, sizeof(buffer) - 1, 0, (struct sockaddr*)&from, &fromlen);
-        if (bytes > 0) {
-            std::string response(buffer, bytes);
-            
-            // Look for LOCATION header
-            size_t loc_pos = response.find("LOCATION:");
-            if (loc_pos == std::string::npos) {
-                loc_pos = response.find("Location:");
-            }
-            
-            if (loc_pos != std::string::npos) {
-                size_t start = response.find("http", loc_pos);
-                if (start != std::string::npos) {
-                    size_t end = response.find("\r\n", start);
-                    if (end != std::string::npos) {
-                        std::string location = response.substr(start, end - start);
-                        locations.push_back(location);
-                        ESP_LOGD(TAG, "Found device location: %s", location.c_str());
-                    }
-                }
-            }
-        }
-    }
-    
-    close(sock);
+    ESP_LOGD(TAG, "UPnP response parsing not implemented in this version");
     return locations;
 }
 
@@ -191,6 +87,105 @@ WiimDevice WiimPro::parse_device_description(const std::string& location) {
     ESP_LOGD(TAG, "Parsed device at %s", device.ip_address.c_str());
     
     return device;
+}
+
+bool WiimPro::make_http_request(const std::string& url, std::string& response) {
+    HTTPClient http;
+    http.begin(url.c_str());
+    http.setTimeout(3000); // 3 second timeout
+    
+    int httpResponseCode = http.GET();
+    
+    if (httpResponseCode > 0) {
+        response = http.getString().c_str();
+        ESP_LOGD(TAG, "HTTP Response: %s", response.c_str());
+        http.end();
+        return httpResponseCode == 200;
+    } else {
+        ESP_LOGE(TAG, "HTTP Error: %d", httpResponseCode);
+        http.end();
+        return false;
+    }
+}
+
+bool WiimPro::pause() {
+    ESP_LOGI(TAG, "Sending pause command to WiiM device at %s", ip_address_.c_str());
+    
+    std::string url = "https://" + ip_address_ + "/httpapi.asp?command=setPlayerCmd:pause";
+    std::string response;
+    
+    if (make_http_request(url, response)) {
+        ESP_LOGD(TAG, "Pause command sent successfully, response: %s", response.c_str());
+        return response.find("OK") != std::string::npos;
+    }
+    
+    ESP_LOGE(TAG, "Failed to send pause command");
+    return false;
+}
+
+bool WiimPro::next() {
+    ESP_LOGI(TAG, "Sending next command to WiiM device at %s", ip_address_.c_str());
+    
+    std::string url = "https://" + ip_address_ + "/httpapi.asp?command=setPlayerCmd:next";
+    std::string response;
+    
+    if (make_http_request(url, response)) {
+        ESP_LOGD(TAG, "Next command sent successfully, response: %s", response.c_str());
+        return response.find("OK") != std::string::npos;
+    }
+    
+    ESP_LOGE(TAG, "Failed to send next command");
+    return false;
+}
+
+bool WiimPro::cycle_input() {
+    ESP_LOGI(TAG, "Cycling input on WiiM device at %s", ip_address_.c_str());
+    
+    // WiiM doesn't have a direct "cycle input" command, so we'll need to:
+    // 1. Get current input mode
+    // 2. Switch to the next available input
+    
+    // Available inputs: wifi, bluetooth, optical, line-in, udisk
+    static const std::vector<std::string> inputs = {"wifi", "bluetooth", "optical", "line-in"};
+    static int current_input_index = 0; // TODO make this class variable and read real input from wiim
+    
+    // Cycle to next input
+    current_input_index = (current_input_index + 1) % inputs.size();
+    
+    return set_input(inputs[current_input_index]);
+}
+
+bool WiimPro::set_input(const std::string& input) {
+    ESP_LOGI(TAG, "Setting input to '%s' on WiiM device at %s", input.c_str(), ip_address_.c_str());
+    
+    // Validate input name and map to WiiM API format
+    std::string wiim_input;
+    std::string input_lower = input;
+    std::transform(input_lower.begin(), input_lower.end(), input_lower.begin(), ::tolower);
+
+    if (input_lower == "wifi" || input_lower == "network") {
+        wiim_input = "wifi";
+    } else if (input_lower == "bluetooth" || input_lower == "bt") {
+        wiim_input = "bluetooth";
+    } else if (input_lower == "optical") {
+        wiim_input = "optical";
+    } else if (input_lower == "line-in" || input_lower == "aux" || input_lower == "aux-in") {
+        wiim_input = "line-in";
+    } else {
+        ESP_LOGE(TAG, "Unknown input: %s", input.c_str());
+        return false;
+    }
+    
+    std::string url = "https://" + ip_address_ + "/httpapi.asp?command=setPlayerCmd:switchmode:" + wiim_input;
+    std::string response;
+    
+    if (make_http_request(url, response)) {
+        ESP_LOGD(TAG, "Set input command sent successfully, response: %s", response.c_str());
+        return response.find("OK") != std::string::npos;
+    }
+    
+    ESP_LOGE(TAG, "Failed to send set input command");
+    return false;
 }
 
 }  // namespace vol_ctrl

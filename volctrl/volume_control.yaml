@@ -324,3 +324,18 @@ number:
       then:
         - lambda: 'id(my_vol_ctrl).set_volume_from_hass(x);'
 
+select:
+  - platform: template
+    name: "Audio Input"
+    id: audio_input_select
+    optimistic: true
+    options:
+      - "Network"
+      - "Bluetooth"
+      - "Line In"
+      - "Optical"
+    initial_option: "Network"
+    set_action:
+      then:
+        - lambda: 'id(my_vol_ctrl).set_input(x);'
+

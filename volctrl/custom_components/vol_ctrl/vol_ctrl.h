@@ -7,6 +7,7 @@
 #include <string>
 #include "device_state.h"
 #include "network.h"
+#include "wiim_pro.h"
 
 // Forward-declare the TFT_eSPI class instead of including the whole header
 class TFT_eSPI;
@@ -65,6 +66,9 @@ class VolCtrl : public Component, public spi::SPIDevice<spi::BIT_ORDER_MSB_FIRST
  protected:
   // TFT display instance
   TFT_eSPI *tft_{nullptr};
+  
+  // WiiM Pro instance for media control
+  WiimPro wiim_pro_;
   
   // UI state tracking
   uint32_t last_device_check_{0};

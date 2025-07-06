@@ -6,6 +6,7 @@
 #include "display.h"
 #include "network.h"
 #include "utils.h"
+#include "wiim_pro.h"
 #include "esphome/core/hal.h"
 
 namespace esphome {
@@ -39,6 +40,9 @@ void VolCtrl::setup() {
   
   // Initialize network subsystem
   network::init();
+  
+  // Initialize WiiM Pro instance
+  wiim_pro_.init();
   
   // Set initial state
   uint32_t now = millis();
@@ -449,27 +453,51 @@ void VolCtrl::process_encoder_change(int diff) {
 }
 
 void VolCtrl::pause() {
-  ESP_LOGI(TAG, "Pause command - not implemented for KH speakers");
-  // KH speakers don't have pause functionality as they are monitors
-  // This could be extended to control connected audio sources if needed
+  ESP_LOGI(TAG, "Pause command received");
+  
+  // Try to pause WiiM devices first
+  if (wiim_pro_.pause()) {
+    ESP_LOGI(TAG, "Successfully sent pause command to WiiM device");
+  } else {
+    ESP_LOGI(TAG, "Pause command - not implemented for KH speakers");
+    // KH speakers don't have pause functionality as they are monitors
+    // This could be extended to control connected audio sources if needed
+  }
 }
 
 void VolCtrl::next() {
-  ESP_LOGI(TAG, "Next command - not implemented for KH speakers");
-  // KH speakers don't have track control functionality as they are monitors
-  // This could be extended to control connected audio sources if needed
+  ESP_LOGI(TAG, "Next command received");
+  
+  // Try to send next command to WiiM devices first
+  if (wiim_pro_.next()) {
+    ESP_LOGI(TAG, "Successfully sent next command to WiiM device");
+  } else {
+    ESP_LOGI(TAG, "Next command - not implemented for KH speakers");
+    // KH speakers don't have track control functionality as they are monitors
+    // This could be extended to control connected audio sources if needed
+  }
 }
 
 void VolCtrl::cycle_input() {
-  ESP_LOGI(TAG, "Cycle input command - not implemented for KH speakers");
-  // KH speakers typically have fixed inputs
-  // This could be extended to control input selection if the speakers support it
+  ESP_LOGI(TAG, "Cycle input command received");
+  
+  // Try to cycle input on WiiM devices first
+  if (wiim_pro_.cycle_input()) {
+    ESP_LOGI(TAG, "Successfully cycled input on WiiM device");
+  } else {
+    ESP_LOGW(TAG, "Failed to cycle input on WiiM device");
+  }
 }
 
 void VolCtrl::set_input(const std::string &input) {
-  ESP_LOGI(TAG, "Set input to: %s - not implemented for KH speakers", input.c_str());
-  // KH speakers typically have fixed inputs
-  // This could be extended to control input selection if the speakers support it
+  ESP_LOGI(TAG, "Set input command received: %s", input.c_str());
+  
+  // Try to set input on WiiM devices first
+  if (wiim_pro_.set_input(input)) {
+    ESP_LOGI(TAG, "Successfully set input to '%s' on WiiM device", input.c_str());
+  } else {
+    ESP_LOGW(TAG, "Failed to set input to '%s' on WiiM device", input.c_str());
+  }
 }
 
 }  // namespace vol_ctrl

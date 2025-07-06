@@ -27,6 +27,12 @@ public:
     const std::string& get_ip_address() const { return ip_address_; }
     void set_ip_address(const std::string& ip) { ip_address_ = ip; }
     
+    // Playback control functions
+    bool pause();
+    bool next();
+    bool cycle_input();
+    bool set_input(const std::string& input);
+    
 private:
     std::string ip_address_;
     static const std::string DEFAULT_IP;
@@ -35,6 +41,9 @@ private:
     bool send_multicast_search();
     std::vector<std::string> parse_ssdp_responses();
     WiimDevice parse_device_description(const std::string& location);
+    
+    // Helper function for HTTP requests
+    bool make_http_request(const std::string& url, std::string& response);
 };
 
 }  // namespace vol_ctrl
