@@ -29,7 +29,7 @@ void VolCtrl::setup() {
   // Initialize the display
   this->tft_ = new TFT_eSPI();
   this->tft_->init();
-  this->tft_->setRotation(2);
+  this->tft_->setRotation(0);
   this->tft_->fillScreen(TFT_BLACK);
   // Do not display anything yet, wait for main loop to draw the UI
   
