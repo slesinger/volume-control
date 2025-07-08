@@ -142,8 +142,8 @@ vol_ctrl:
 sensor:
   - platform: rotary_encoder
     id: volume_encoder
-    pin_a: GPIO32
-    pin_b: GPIO33
+    pin_a: GPIO26
+    pin_b: GPIO27
     min_value: -200  # Allow for plenty of negative and positive movement
     max_value: 200
     resolution: 1
@@ -226,7 +226,7 @@ binary_sensor:
 
   - platform: gpio
     pin:
-      number: GPIO26
+      number: GPIO32
       mode: INPUT_PULLUP
     name: "Push Button A"
     id: push_button_a
@@ -237,7 +237,7 @@ binary_sensor:
 
   - platform: gpio
     pin:
-      number: GPIO27
+      number: GPIO33
       mode: INPUT_PULLUP
     name: "Push Button B"
     id: push_button_b

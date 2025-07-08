@@ -22,8 +22,7 @@ It uses Senheiser Sound Control Protocol (SSP) to control the volume of the spea
 
 ## TODO
 
-deep sleep - switch of display vcc
-make display off during seep sleep
+deep sleep - switch of display vcc. make display off during seep sleep
 zabudovat hw do top-case
 deepsleep kdyz repraky usnou
 discover wiim and display input
@@ -69,8 +68,8 @@ Display pins:
 Rotary encoder pins:
 - GND -> GND
 - VCC -> 3.3V
-- CLK -> GPIO32
-- DT  -> GPIO33
+- CLK -> GPIO26
+- DT  -> GPIO27
 - SW  -> GPIO25
 
 ## Software
