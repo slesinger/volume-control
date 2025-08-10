@@ -4,15 +4,17 @@ For DSP enabled speakers that can be controlled over network IPv6.
 
 - KH-120 II
 - KH-150
-- ??
+- there must be more ...
+
+![Volume Control Device](docs/vyrobek.png)
 
 ## Features
-- Automatic speaker discovery
+- Automatic speaker discovery (planned, use KH Tool for discovery, hardcoded)
 - Volume control
 - Mute control
 - Display of current volume level
 - Display speaker settings
-- Set parametric equalizer settings
+- Set parametric equalizer settings (planned)
 - Works with Home Assistant
 - 3 configurable buttons (e.g. input select, pause/play, next song)
 - works with Wii Pro
@@ -34,9 +36,9 @@ curl -X GET "https://192.168.1.245/httpapi.asp?command=getMetaInfo" -k | jq
 {
   "metaData": {
     "album": "Best of the Best",
-    "title": "Červená řeka",
+    "title": "Medlik je nejlepsi",
     "subtitle": "unknow",
-    "artist": "Helena Vondrackova",
+    "artist": "Med World",
     "albumArtURI": "https://static.qobuz.com/images/covers/4a/hh/clin57z27hh4a_600.jpg",
     "sampleRate": "44100",
     "bitDepth": "16",
