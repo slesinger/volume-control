@@ -3,7 +3,6 @@
 #include <string>
 #include <vector>
 #include "device_state.h"
-#include "wiim_pro.h"
 
 namespace esphome
 {
@@ -15,7 +14,7 @@ namespace esphome
             struct DeviceVolStdbyData
             {
                 int standby_countdown = 0;
-                float volume = 0.0f;
+                float volume = -0.1f;
                 bool mute = false;
             };
 
@@ -34,8 +33,6 @@ namespace esphome
             // Initialize network subsystem
             void init();
             
-            // Get WiiM Pro instance
-            WiimPro& get_wiim_pro();
         } // namespace network
     } // namespace vol_ctrl
 } // namespace esphome

@@ -7,7 +7,6 @@
 #include <string>
 #include "device_state.h"
 #include "network.h"
-#include "wiim_pro.h"
 
 // Forward-declare the TFT_eSPI class instead of including the whole header
 class TFT_eSPI;
@@ -33,6 +32,7 @@ class VolCtrl : public Component, public spi::SPIDevice<spi::BIT_ORDER_MSB_FIRST
   void toggle_mute();
   void mute();
   void unmute();
+  void set_mute(bool new_mute);
   void enter_menu();
   void exit_menu();
   
@@ -50,6 +50,10 @@ class VolCtrl : public Component, public spi::SPIDevice<spi::BIT_ORDER_MSB_FIRST
   // Display brightness control (0-100%)
   void set_display_brightness(int brightness);
   int get_display_brightness() const { return backlight_level_; }
+  
+  // Deep sleep settings
+  void set_deep_sleep_timeout(int timeout_seconds) { deep_sleep_timeout_ = timeout_seconds; }
+  int get_deep_sleep_timeout() const { return deep_sleep_timeout_; }
   
   // Deep sleep functionality
   void deep_sleep();
@@ -76,13 +80,6 @@ class VolCtrl : public Component, public spi::SPIDevice<spi::BIT_ORDER_MSB_FIRST
   // TFT display instance
   TFT_eSPI *tft_{nullptr};
   
-  // WiiM Pro instance for media control
-  WiimPro wiim_pro_;
-  
-  // UI state tracking
-  uint32_t last_device_check_{0};
-  uint32_t last_detail_check_{0};
-  
   // Menu state
   bool in_menu_{false};
   int menu_level_{0};  // 0 = main menu, 1 = submenu, etc.
@@ -94,14 +91,18 @@ class VolCtrl : public Component, public spi::SPIDevice<spi::BIT_ORDER_MSB_FIRST
   // Display settings
   int backlight_level_{100};  // 0-100%
   int display_timeout_{60};  // In seconds
-  uint32_t last_interaction_{0};
-  bool display_active_{true};
+  
+  // Deep sleep settings
+  int deep_sleep_timeout_{600};  // In seconds (10 minutes default)
+  uint32_t speakers_unavailable_since_{0};  // Timestamp when all speakers became unavailable
   
   // Backlight control
   output::FloatOutput *backlight_pin_{nullptr};
 
   // Rate limiting for volume changes
   uint32_t last_volume_change_{0}; // Timestamp of last volume change to rate limit
+  uint32_t main_loop_counter{0}; // Counter for main loop timing
+  
   bool user_adjusting_volume_{false}; // Flag to indicate user is actively changing volume
   
 };

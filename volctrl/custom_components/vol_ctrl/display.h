@@ -18,6 +18,7 @@ namespace esphome
 
             // Partial section updates for efficient rendering
             void update_wifi_status(TFT_eSPI *tft, bool connected);
+            void update_wiim_status(TFT_eSPI *tft, bool available);
             void update_speaker_dots(TFT_eSPI *tft, const std::map<std::string, DeviceState> &states);
             void update_datetime(TFT_eSPI *tft, const std::string &datetime);
             void update_standby_time(TFT_eSPI *tft, int standby_countdown);
@@ -42,6 +43,7 @@ namespace esphome
 
             ScreenRegion get_standby_time_region();
             ScreenRegion get_wifi_region();
+            ScreenRegion get_wiim_region();
             ScreenRegion get_speaker_dots_region();
             ScreenRegion get_datetime_region();
             ScreenRegion get_volume_region();

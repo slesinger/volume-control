@@ -19,6 +19,10 @@ ScreenRegion get_wifi_region() {
   return {42, 0, 20, TOP_AREA_HEIGHT};
 }
 
+ScreenRegion get_wiim_region() {
+  return {140, 0, 20, TOP_AREA_HEIGHT}; // Position WiiM indicator after datetime but before edge
+}
+
 ScreenRegion get_speaker_dots_region() {
   return {62, 12, 50, TOP_AREA_HEIGHT};  // Area where speaker dots appear
 }
@@ -77,6 +81,17 @@ void update_wifi_status(TFT_eSPI *tft, bool connected) {
   tft->fillRect(x - 13, y + region.h, 28, 14, TFT_BLACK); // Erase bottom half
 }
 
+void update_wiim_status(TFT_eSPI *tft, bool available) {
+  ScreenRegion region = get_wiim_region();
+  // Draw WiiM status indicator
+  uint16_t color = available ? TFT_GREEN : TFT_RED;
+  
+  tft->setTextFont(2);
+  tft->setTextSize(1);
+  tft->setTextColor(color, TFT_BLACK);
+  tft->drawString("W", region.x, region.y+8); // "W" for WiiM
+}
+
 void update_speaker_dots(TFT_eSPI *tft, const std::map<std::string, DeviceState> &states) {
   ScreenRegion region = get_speaker_dots_region();
   int idx = 0;
@@ -117,7 +132,7 @@ void update_volume_display(TFT_eSPI *tft, float volume, bool user_adjusting) {
 
   // Format volume display
   if (volume < -0.0f) {
-    snprintf(buf, sizeof(buf), "--");
+    snprintf(buf, sizeof(buf), " -- ");
   } else {
     int vol_int = static_cast<int>(volume);
     snprintf(buf, sizeof(buf), "%02d", vol_int);

@@ -1,4 +1,6 @@
 #include "upnp_client.h"
+#include "esphome/core/hal.h"
+#include "esphome/core/application.h"
 #include <WiFiUdp.h>
 
 namespace esphome {
@@ -23,7 +25,8 @@ bool UPnPClient::discover_services() {
     
     HTTPClient http;
     http.begin(device_desc_url.c_str());
-    http.setTimeout(5000);
+    http.setTimeout(1000);  // Reduce timeout to 1 second to avoid watchdog issues
+    http.setConnectTimeout(500); // Reduce connection timeout to 500ms
     
     int httpResponseCode = http.GET();
     
@@ -38,17 +41,19 @@ bool UPnPClient::discover_services() {
             return true;
         }
     } else {
-        ESP_LOGE(TAG, "Failed to get device description, HTTP code: %d", httpResponseCode);
+        ESP_LOGD(TAG, "Failed to get device description from port 49152, HTTP code: %d", httpResponseCode);
         http.end();
     }
     
-    // Fallback: try common alternative ports
+    // Fallback: try common alternative ports (but with shorter timeout)
     std::vector<int> ports = {49153, 49154, 8080};
     for (int port : ports) {
         device_desc_url = "http://" + device_ip_ + ":" + std::to_string(port) + "/description.xml";
         ESP_LOGD(TAG, "Trying alternative URL: %s", device_desc_url.c_str());
         
         http.begin(device_desc_url.c_str());
+        http.setTimeout(500);  // Reduce fallback timeout to 500ms to avoid watchdog issues
+        http.setConnectTimeout(500); // Add connection timeout
         httpResponseCode = http.GET();
         
         if (httpResponseCode == 200) {
@@ -64,7 +69,7 @@ bool UPnPClient::discover_services() {
         }
     }
     
-    ESP_LOGE(TAG, "Could not discover UPnP services");
+    ESP_LOGW(TAG, "Could not discover UPnP services for device %s (device may be offline)", device_ip_.c_str());
     return false;
 }
 
@@ -276,7 +281,8 @@ bool UPnPClient::previous() {
 bool UPnPClient::make_soap_request(const std::string& action, const std::string& soap_body, std::string& response) {
     HTTPClient http;
     http.begin(av_transport_control_url_.c_str());
-    http.setTimeout(5000);
+    http.setTimeout(1500);  // Increase timeout to 1.5 seconds for better reliability
+    http.setConnectTimeout(500); // Add connection timeout
     
     // Set SOAP headers
     http.addHeader("Content-Type", "text/xml; charset=\"utf-8\"");

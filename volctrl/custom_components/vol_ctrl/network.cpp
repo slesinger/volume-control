@@ -44,10 +44,18 @@ bool send_ssc_command(const std::string &ipv6, const std::string &command, std::
     return false;
   }
 
-  // Set socket options
+  // Set socket to non-blocking mode for connect timeout control
+  int flags = fcntl(sock, F_GETFL, 0);
+  if (flags < 0 || fcntl(sock, F_SETFL, flags | O_NONBLOCK) < 0) {
+    ESP_LOGE(TAG, "Failed to set socket to non-blocking: %d (%s)", errno, strerror(errno));
+    close(sock);
+    return false;
+  }
+
+  // Set socket options for send/receive timeouts
   struct timeval timeout;
-  timeout.tv_sec = 1;  // 1 second timeout (shorter for better UI responsiveness)
-  timeout.tv_usec = 0;
+  timeout.tv_sec = 0;  // Reduce to 100ms timeout for maximum UI responsiveness
+  timeout.tv_usec = 100000;  // 100ms in microseconds
   if (setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout)) < 0) {
     ESP_LOGE(TAG, "Failed to set receive timeout: %d (%s)", errno, strerror(errno));
     close(sock);
@@ -74,12 +82,48 @@ bool send_ssc_command(const std::string &ipv6, const std::string &command, std::
 
   ESP_LOGD(TAG, "Socket created, attempting to connect to [%s]:45...", ipv6.c_str());
   int connect_result = connect(sock, (struct sockaddr *)&sa, sizeof(sa));
+  
   if (connect_result < 0) {
-    ESP_LOGE(TAG, "Failed to connect to %s: %d (errno: %d - %s)", 
-             ipv6.c_str(), connect_result, errno, strerror(errno));
+    if (errno == EINPROGRESS) {
+      // Connection in progress, wait with select/poll for up to 100ms
+      fd_set write_fds;
+      FD_ZERO(&write_fds);
+      FD_SET(sock, &write_fds);
+      
+      struct timeval connect_timeout;
+      connect_timeout.tv_sec = 0;
+      connect_timeout.tv_usec = 300000;  // 300ms
+      
+      int select_result = select(sock + 1, nullptr, &write_fds, nullptr, &connect_timeout);
+      if (select_result <= 0) {
+        ESP_LOGE(TAG, "Connection to %s timed out or failed", ipv6.c_str());
+        close(sock);
+        return false;
+      }
+      
+      // Check if connection was successful
+      int error = 0;
+      socklen_t len = sizeof(error);
+      if (getsockopt(sock, SOL_SOCKET, SO_ERROR, &error, &len) < 0 || error != 0) {
+        ESP_LOGE(TAG, "Connection to %s failed: %s", ipv6.c_str(), strerror(error));
+        close(sock);
+        return false;
+      }
+    } else {
+      ESP_LOGE(TAG, "Failed to connect to %s: %d (errno: %d - %s)", 
+               ipv6.c_str(), connect_result, errno, strerror(errno));
+      close(sock);
+      return false;
+    }
+  }
+  
+  // Set socket back to blocking mode for send/receive operations
+  if (fcntl(sock, F_SETFL, flags) < 0) {
+    ESP_LOGE(TAG, "Failed to set socket back to blocking: %d (%s)", errno, strerror(errno));
     close(sock);
     return false;
   }
+  
   ESP_LOGD(TAG, "Connected to [%s]:45 in %u ms", ipv6.c_str(), millis() - start_time);
 
   // Always send command with CRLF line ending as required by the protocol
@@ -117,6 +161,9 @@ bool send_ssc_command(const std::string &ipv6, const std::string &command, std::
   
   // Always close the socket
   close(sock);
+  
+  // Yield control back to RTOS after network operation
+  esphome::yield();
   
   return success;
 }
@@ -203,10 +250,6 @@ void init() {
   // Log all IPv6 addresses at startup
   log_ipv6_addresses();
   
-  // Initialize WiiM Pro controller
-  static WiimPro wiim_pro;
-  wiim_pro.init();
-  
   // Here you would normally load devices from persistent storage
   // For now, hardcoding the known devices from the original code
   register_device("Left-6473470117", "2a00:1028:8390:75ee:2a36:38ff:fe61:25b9");
@@ -215,11 +258,6 @@ void init() {
   ESP_LOGI(TAG, "Network module initialized with %d devices", device_map.size());
 }
 
-// Get WiiM Pro instance
-WiimPro& get_wiim_pro() {
-  static WiimPro wiim_pro;
-  return wiim_pro;
-}
 }  // namespace network
 }  // namespace vol_ctrl
 }  // namespace esphome

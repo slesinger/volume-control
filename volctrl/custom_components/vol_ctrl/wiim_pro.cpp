@@ -2,6 +2,7 @@
 #include "utils.h"
 #include "esphome/core/log.h"
 #include "esphome/core/hal.h"
+#include "esphome/core/application.h"
 #include <HTTPClient.h>
 #include <WiFiClient.h>
 #include <cstring>
@@ -12,34 +13,75 @@ namespace vol_ctrl {
 
 static const char *const TAG = "vol_ctrl.wiim_pro";
 
-const std::string WiimPro::DEFAULT_IP = "192.168.1.245";
+const std::string WiimPro::DEFAULT_IP = "192.168.1.243";
 
-WiimPro::WiimPro() : ip_address_(DEFAULT_IP), upnp_client_(nullptr) {
+WiimPro::WiimPro() : ip_address_(DEFAULT_IP), upnp_client_(nullptr), is_available_(false), last_retry_time_(0) {
 }
 
-void WiimPro::init() {
+bool WiimPro::init() {
     ESP_LOGI(TAG, "WiimPro::init() called with default IP: %s", ip_address_.c_str());
-    init_upnp_client();
+    
+    // For initial startup, use more aggressive timeouts to avoid blocking
+    // the system startup sequence
+    if (!init_upnp_client()) {
+        ESP_LOGW(TAG, "WiiM Pro initialization failed - device may be offline, features disabled until reconnection");
+        is_available_ = false;
+        last_retry_time_ = millis() - RETRY_INTERVAL_MS + 2000; // Start retry timer
+        return false;
+    }
+    ESP_LOGI(TAG, "WiiM Pro initialized successfully - all features enabled");
+    is_available_ = true;
+    return true;
 }
 
-void WiimPro::set_ip_address(const std::string& ip) {
-    ip_address_ = ip;
-    // Reinitialize UPnP client with new IP
-    init_upnp_client();
+void WiimPro::try_reconnect() {
+    uint32_t now = millis();
+    
+    // Only try to reconnect if device is not available and enough time has passed
+    if (is_available_ || (now - last_retry_time_) < RETRY_INTERVAL_MS) {
+        return;
+    }
+    
+    ESP_LOGI(TAG, "WiiM device offline - attempting reconnection to %s", ip_address_.c_str());
+    
+    if (init_upnp_client()) {
+        ESP_LOGI(TAG, "✓ WiiM device back online - all features restored");
+        is_available_ = true;
+    } else {
+        ESP_LOGD(TAG, "WiiM device still offline, will retry in %d seconds (features disabled)", RETRY_INTERVAL_MS / 1000);
+        last_retry_time_ = now; // Reset retry timer
+    }
 }
 
 bool WiimPro::init_upnp_client() {
     ESP_LOGI(TAG, "Initializing UPnP client for IP: %s", ip_address_.c_str());
     
-    upnp_client_.reset(new UPnPClient(ip_address_));
+    // First test basic HTTP connectivity to WiiM device using its HTTP API
+    std::string test_url = "https://" + ip_address_ + "/httpapi.asp?command=getPlayerStatus";
+    std::string test_response;
     
-    if (!upnp_client_->init()) {
-        ESP_LOGE(TAG, "Failed to initialize UPnP client");
-        upnp_client_.reset();
+    ESP_LOGD(TAG, "Testing basic connectivity to WiiM device...");
+    if (!make_http_request(test_url, test_response)) {
+        ESP_LOGW(TAG, "WiiM device at %s is not responding to HTTP requests (device may be offline)", ip_address_.c_str());
+        is_available_ = false;
         return false;
     }
     
+    ESP_LOGD(TAG, "WiiM device responds to HTTP, attempting UPnP initialization...");
+    
+    upnp_client_.reset(new UPnPClient(ip_address_));
+    
+    if (!upnp_client_->init()) {
+        ESP_LOGW(TAG, "UPnP client initialization failed for %s, but device is reachable via HTTP", ip_address_.c_str());
+        ESP_LOGW(TAG, "UPnP features will be limited, but basic controls should work");
+        upnp_client_.reset();
+        // Still mark as available since HTTP API works
+        is_available_ = true;
+        return true; // Return true since we can still use HTTP API
+    }
+    
     ESP_LOGI(TAG, "UPnP client initialized successfully");
+    is_available_ = true;
     return true;
 }
 
@@ -114,29 +156,30 @@ WiimDevice WiimPro::parse_device_description(const std::string& location) {
 bool WiimPro::make_http_request(const std::string& url, std::string& response) {
     HTTPClient http;
     http.begin(url.c_str());
-    http.setTimeout(3000); // 3 second timeout
+    http.setTimeout(500); // Reduce timeout to 500ms to avoid watchdog issues
+    http.setConnectTimeout(300); // Reduce connection timeout to 300ms
     
     int httpResponseCode = http.GET();
     
     if (httpResponseCode > 0) {
         response = http.getString().c_str();
-        ESP_LOGD(TAG, "HTTP Response: %s", response.c_str());
+        ESP_LOGV(TAG, "HTTP Response: %s", response.c_str()); // Changed to LOGV to reduce spam
         http.end();
         return httpResponseCode == 200;
     } else {
-        ESP_LOGE(TAG, "HTTP Error: %d", httpResponseCode);
+        ESP_LOGD(TAG, "HTTP Error: %d", httpResponseCode); // Changed to LOGD
         http.end();
         return false;
     }
 }
 
 bool WiimPro::pause_play_toggle() {
-    ESP_LOGI(TAG, "Toggling play/pause on WiiM device at %s", ip_address_.c_str());
-    
-    if (!upnp_client_) {
-        ESP_LOGE(TAG, "UPnP client not initialized");
+    if (!is_available_) {
+        ESP_LOGD(TAG, "WiiM device not available, skipping pause/play toggle");
         return false;
     }
+    
+    ESP_LOGI(TAG, "Toggling play/pause on WiiM device at %s", ip_address_.c_str());
     
     // Get current transport state
     TransportState current_state = upnp_client_->get_transport_state();
@@ -167,52 +210,52 @@ bool WiimPro::pause_play_toggle() {
 }
 
 bool WiimPro::play() {
-    ESP_LOGI(TAG, "Sending play command to WiiM device at %s", ip_address_.c_str());
-    
-    if (!upnp_client_) {
-        ESP_LOGE(TAG, "UPnP client not initialized");
+    if (!is_available_) {
+        ESP_LOGD(TAG, "WiiM device not available, skipping play command");
         return false;
     }
+    
+    ESP_LOGI(TAG, "Sending play command to WiiM device at %s", ip_address_.c_str());
     
     return upnp_client_->play();
 }
 
 bool WiimPro::pause() {
-    ESP_LOGI(TAG, "Sending pause command to WiiM device at %s", ip_address_.c_str());
-    
-    if (!upnp_client_) {
-        ESP_LOGE(TAG, "UPnP client not initialized");
+    if (!is_available_) {
+        ESP_LOGD(TAG, "WiiM device not available, skipping pause command");
         return false;
     }
+    
+    ESP_LOGI(TAG, "Sending pause command to WiiM device at %s", ip_address_.c_str());
     
     return upnp_client_->pause();
 }
 
 bool WiimPro::stop() {
-    ESP_LOGI(TAG, "Sending stop command to WiiM device at %s", ip_address_.c_str());
-    
-    if (!upnp_client_) {
-        ESP_LOGE(TAG, "UPnP client not initialized");
+    if (!is_available_) {
+        ESP_LOGD(TAG, "WiiM device not available, skipping stop command");
         return false;
     }
+    
+    ESP_LOGI(TAG, "Sending stop command to WiiM device at %s", ip_address_.c_str());
     
     return upnp_client_->stop();
 }
 
 bool WiimPro::previous() {
-    ESP_LOGI(TAG, "Sending previous command to WiiM device at %s", ip_address_.c_str());
-    
-    if (!upnp_client_) {
-        ESP_LOGE(TAG, "UPnP client not initialized");
+    if (!is_available_) {
+        ESP_LOGD(TAG, "WiiM device not available, skipping previous command");
         return false;
     }
+    
+    ESP_LOGI(TAG, "Sending previous command to WiiM device at %s", ip_address_.c_str());
     
     return upnp_client_->previous();
 }
 
 TransportState WiimPro::get_transport_state() {
-    if (!upnp_client_) {
-        ESP_LOGE(TAG, "UPnP client not initialized");
+    if (!is_available_) {
+        ESP_LOGD(TAG, "WiiM device not available, returning unknown transport state");
         return TransportState::UNKNOWN;
     }
     
@@ -220,8 +263,8 @@ TransportState WiimPro::get_transport_state() {
 }
 
 bool WiimPro::get_transport_info(TransportInfo& info) {
-    if (!upnp_client_) {
-        ESP_LOGE(TAG, "UPnP client not initialized");
+    if (!is_available_) {
+        ESP_LOGD(TAG, "WiiM device not available, cannot get transport info");
         return false;
     }
     
@@ -229,17 +272,22 @@ bool WiimPro::get_transport_info(TransportInfo& info) {
 }
 
 bool WiimPro::next() {
-    ESP_LOGI(TAG, "Sending next command to WiiM device at %s", ip_address_.c_str());
-    
-    if (!upnp_client_) {
-        ESP_LOGE(TAG, "UPnP client not initialized");
+    if (!is_available_) {
+        ESP_LOGD(TAG, "WiiM device not available, skipping next command");
         return false;
     }
+    
+    ESP_LOGI(TAG, "Sending next command to WiiM device at %s", ip_address_.c_str());
     
     return upnp_client_->next();
 }
 
 bool WiimPro::cycle_input() {
+    if (!is_available_) {
+        ESP_LOGD(TAG, "WiiM device not available, skipping input cycle");
+        return false;
+    }
+    
     ESP_LOGI(TAG, "Cycling input on WiiM device at %s", ip_address_.c_str());
     
     // WiiM doesn't have a direct "cycle input" command, so we'll need to:
@@ -257,6 +305,11 @@ bool WiimPro::cycle_input() {
 }
 
 bool WiimPro::set_input(const std::string& input) {
+    if (!is_available_) {
+        ESP_LOGD(TAG, "WiiM device not available, skipping set input");
+        return false;
+    }
+    
     ESP_LOGI(TAG, "Setting input to '%s' on WiiM device at %s", input.c_str(), ip_address_.c_str());
     
     // Validate input name and map to WiiM API format
@@ -283,6 +336,11 @@ bool WiimPro::set_input(const std::string& input) {
     if (make_http_request(url, response)) {
         ESP_LOGD(TAG, "Set input command sent successfully, response: %s", response.c_str());
         return response.find("OK") != std::string::npos;
+    } else {
+        // Mark as unavailable if HTTP request fails
+        ESP_LOGW(TAG, "Failed to send set input command, marking device as unavailable");
+        is_available_ = false;
+        last_retry_time_ = millis();
     }
     
     ESP_LOGE(TAG, "Failed to send set input command");
@@ -290,6 +348,11 @@ bool WiimPro::set_input(const std::string& input) {
 }
 
 std::string WiimPro::get_current_input() {
+    if (!is_available_) {
+        ESP_LOGD(TAG, "WiiM device not available, returning default input");
+        return "Network"; // Default fallback
+    }
+    
     std::string url = "https://" + ip_address_ + "/httpapi.asp?command=getPlayerStatus";
     std::string response;
     
@@ -337,6 +400,9 @@ std::string WiimPro::get_current_input() {
         ESP_LOGW(TAG, "Could not parse mode from response: %s", response.c_str());
     } else {
         ESP_LOGE(TAG, "Failed to get player status");
+        // Mark as unavailable if HTTP request fails
+        is_available_ = false;
+        last_retry_time_ = millis();
     }
     
     return "Network"; // Default fallback

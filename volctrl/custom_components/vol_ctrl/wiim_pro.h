@@ -20,16 +20,31 @@ public:
     WiimPro();
     
     // Initialize with default IP address
-    void init();
+    bool init();
+    
+    // Check if WiiM device is available
+    bool is_available() const { return is_available_; }
+    
+    // Get status message for logging
+    std::string get_status_message() const {
+        if (is_available_) {
+            return "WiiM device online - all features enabled";
+        } else {
+            return "WiiM device offline - features disabled (attempting reconnection every 60s)";
+        }
+    }
+    
+    // Try to reconnect to WiiM device (called periodically)
+    void try_reconnect();
     
     // Scan for WiiM devices on the network
     std::vector<WiimDevice> scan();
     
     // Get/set the IP address
     const std::string& get_ip_address() const { return ip_address_; }
-    void set_ip_address(const std::string& ip);
     
     // Playback control functions (following wiimplay approach)
+    // Returns false if device is not available
     bool pause_play_toggle();
     bool play();
     bool pause();
@@ -38,6 +53,7 @@ public:
     bool stop();
     
     // Input control (still using HTTP API as UPnP doesn't support this)
+    // Returns false if device is not available
     bool cycle_input();
     bool set_input(const std::string& input);
     std::string get_current_input();
@@ -51,6 +67,11 @@ private:
     std::unique_ptr<UPnPClient> upnp_client_;
     static const std::string DEFAULT_IP;
     
+    // Availability tracking
+    bool is_available_;
+    uint32_t last_retry_time_;
+    static const uint32_t RETRY_INTERVAL_MS = 60000; // Try to reconnect every 60 seconds (already optimal)
+    
     // Helper functions for UPnP discovery
     bool send_multicast_search();
     std::vector<std::string> parse_ssdp_responses();
@@ -61,6 +82,7 @@ private:
     
     // Initialize UPnP client
     bool init_upnp_client();
+    
 };
 
 }  // namespace vol_ctrl
