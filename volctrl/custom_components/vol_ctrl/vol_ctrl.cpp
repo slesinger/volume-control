@@ -78,13 +78,13 @@ void VolCtrl::loop() {
     else
       break;
   }
-  if (now - this->last_volume_change_ >= 2000 && !in_menu_) {  // reset time to commit the volume
+  if (now - this->last_volume_change_ >= 500 && !in_menu_) {  // reset time to commit the volume
     this->last_volume_change_ = now;
   }
 
   // every 30 seconds, we check the device states and update the display if needed
   // Give more time on the first check after WiFi connects
-  if (now - this->main_loop_counter > 30000) {
+  if (now - this->main_loop_counter > 10000) {
     bool is_up_changed = false;
     bool standby_countdown_changed = false;
     bool volume_changed = false;
