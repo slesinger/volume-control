@@ -7,9 +7,29 @@
 #include <string>
 #include "device_state.h"
 #include "network.h"
+#include "esphome/core/hal.h"
+#include <esp_sleep.h>
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#include "freertos/queue.h"
 
 // Forward-declare the TFT_eSPI class instead of including the whole header
 class TFT_eSPI;
+
+// Enum to define network request types
+enum class NetworkRequestType {
+  GET_DEVICE_DATA,
+  SET_VOLUME,
+  SET_MUTE
+};
+
+// Struct for messages sent to the network task
+struct NetworkRequest {
+  NetworkRequestType type;
+  std::string ipv6;
+  float volume;
+  bool mute;
+};
 
 namespace esphome {
 namespace vol_ctrl {
@@ -62,7 +82,6 @@ class VolCtrl : public Component, public spi::SPIDevice<spi::BIT_ORDER_MSB_FIRST
   void menu_up();
   void menu_down();
   void menu_select();
-  void exit_brightness_adjustment();
   
   // Direct volume setting for Home Assistant
   void set_volume_from_hass(float level);
@@ -87,7 +106,7 @@ class VolCtrl : public Component, public spi::SPIDevice<spi::BIT_ORDER_MSB_FIRST
   int menu_items_count_{0};
   bool adjusting_brightness_{false};  // Flag to indicate brightness adjustment mode
   float volume_step_{1.0f};  // Default 1dB steps
-  
+
   // Display settings
   int backlight_level_{100};  // 0-100%
   int display_timeout_{60};  // In seconds
@@ -96,15 +115,32 @@ class VolCtrl : public Component, public spi::SPIDevice<spi::BIT_ORDER_MSB_FIRST
   int deep_sleep_timeout_{600};  // In seconds (10 minutes default)
   uint32_t speakers_unavailable_since_{0};  // Timestamp when all speakers became unavailable
   
+  // Task and Queue handles
+  TaskHandle_t network_task_handle_ = nullptr;
+  QueueHandle_t network_queue_ = nullptr;
+
+  // Static wrapper for task
+  static void network_task_wrapper(void *param) {
+    static_cast<VolCtrl*>(param)->network_task();
+  }
+  void network_task();
+
   // Backlight control
   output::FloatOutput *backlight_pin_{nullptr};
+  void exit_brightness_adjustment();
 
   // Rate limiting for volume changes
   uint32_t last_volume_change_{0}; // Timestamp of last volume change to rate limit
   uint32_t main_loop_counter{0}; // Counter for main loop timing
   
   bool user_adjusting_volume_{false}; // Flag to indicate user is actively changing volume
-  
+
+private:
+  // Last known state for change detection
+  float last_known_volume_{-1.0f};
+  bool last_known_mute_state_{false};
+  int last_known_standby_countdown_{-1};
+  bool last_known_is_up_{false};
 };
 
 }  // namespace vol_ctrl

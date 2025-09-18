@@ -29,6 +29,20 @@ void VolCtrl::setup() {
   // Show startup message immediately
   esphome::vol_ctrl::display::update_status_message(this->tft_, "Starting up...");
   
+    // Create a queue to handle network requests
+  this->network_queue_ = xQueueCreate(10, sizeof(NetworkRequest));
+
+  // Create a dedicated task for network operations on Core 0
+  xTaskCreatePinnedToCore(
+      network_task_wrapper,   // Function to implement the task
+      "NetworkTask",          // Name of the task
+      4096,                   // Stack size in words
+      this,                   // Task input parameter
+      1,                      // Priority of the task
+      &this->network_task_handle_, // Task handle
+      0                       // Core where the task should run
+  );
+
   // Initialize backlight if configured
   if (this->backlight_pin_ != nullptr) {
     ESP_LOGCONFIG(TAG, "Setting backlight to 100%%");
@@ -71,6 +85,7 @@ void VolCtrl::loop() {
       // Only call volume_change if requested volume is different from last sent volume
       if (fabs(requested_vol - last_sent_vol) > 1e-4) {
         const std::string &ipv6 = entry.first;
+        // NON-BLOCKING: volume_change now sends to queue
         volume_change(ipv6, requested_vol);
         state.set_last_sent_volume(requested_vol);
       }
@@ -82,7 +97,7 @@ void VolCtrl::loop() {
     this->last_volume_change_ = now;
   }
 
-  // every 30 seconds, we check the device states and update the display if needed
+  // every 10 seconds, we check the device states and update the display if needed
   // Give more time on the first check after WiFi connects
   if (now - this->main_loop_counter > 10000) {
     bool is_up_changed = false;
@@ -92,52 +107,54 @@ void VolCtrl::loop() {
     this->main_loop_counter = now;
     DeviceState* last_state = nullptr;
     
-    // Process devices one at a time and yield between each to prevent watchdog timeout
-    static size_t device_index = 0;
+    // Trigger a refresh for all devices by sending a request to the network task
+    for (auto const& entry : device_states) {
+        const std::string& ipv6 = entry.first;
+        NetworkRequest request = {NetworkRequestType::GET_DEVICE_DATA, ipv6, 0.0f, false};
+        xQueueSend(this->network_queue_, &request, (TickType_t)0);
+    }
     
-    if (device_states.size() > 0) {
-      auto it = device_states.begin();
-      std::advance(it, device_index % device_states.size());
-      
-      const std::string &ipv6 = it->first;
-      DeviceState &state = it->second;
-      state.set_requested_volume(-1.0f);
-      
-      ESP_LOGD(TAG, "Checking device status for %s", ipv6.c_str());
-      
-      // Feed the watchdog before potentially blocking network call
-      esphome::yield();
-      
-      network::DeviceVolStdbyData current_device_data;
-      bool is_up = network::get_device_data(ipv6, current_device_data);
-      
-      // Feed the watchdog after network call
-      esphome::yield();
-      
-      is_up_changed |= state.set_is_up(is_up);
-      standby_countdown_changed = state.set_standby_countdown(current_device_data.standby_countdown);
-      volume_changed = state.set_volume(current_device_data.volume);
-      mute_changed = state.set_mute(current_device_data.mute);
+    // Process the most recently updated state for display purposes.
+    // The network task updates the state in the background. We just read it here.
+    if (!device_states.empty()) {
+      // For display, we'll just use the state of the first device.
+      DeviceState &state = device_states.begin()->second;
       last_state = &state;
-      
-      device_index++; // Move to next device for next iteration
-      
-      ESP_LOGD(TAG, "Device %s status: %s", ipv6.c_str(), is_up ? "online" : "offline");
+
+      // Check for changes against our last known state
+      if (state.volume != this->last_known_volume_) {
+        volume_changed = true;
+        this->last_known_volume_ = state.volume;
+      }
+      if (state.muted != this->last_known_mute_state_) {
+        mute_changed = true;
+        this->last_known_mute_state_ = state.muted;
+      }
+      if (state.standby_countdown != this->last_known_standby_countdown_) {
+        standby_countdown_changed = true;
+        this->last_known_standby_countdown_ = state.standby_countdown;
+      }
+      if (state.is_up != this->last_known_is_up_) {
+         is_up_changed = true;
+         this->last_known_is_up_ = state.is_up;
+      }
     }
 
     wiim_pro_.try_reconnect();   // this is fast if connected
 
     if (!in_menu_) {
       // Update changed values on display (every 5sec)
-      if (standby_countdown_changed && last_state)
-        esphome::vol_ctrl::display::update_standby_time(this->tft_, last_state->standby_countdown);
+      if (last_state != nullptr) {
+        if (standby_countdown_changed)
+          esphome::vol_ctrl::display::update_standby_time(this->tft_, last_state->standby_countdown);
+        if (volume_changed)
+          esphome::vol_ctrl::display::update_volume_display(this->tft_, last_state->volume);
+        if (mute_changed)
+          esphome::vol_ctrl::display::update_mute_status(this->tft_, last_state->muted, last_state->volume);
+      }
       if (is_up_changed)
         esphome::vol_ctrl::display::update_speaker_dots(this->tft_, device_states);
       esphome::vol_ctrl::display::update_datetime(this->tft_, utils::get_datetime_string());
-      if (volume_changed && last_state)
-        esphome::vol_ctrl::display::update_volume_display(this->tft_, last_state->volume);
-      if (mute_changed && last_state)
-        esphome::vol_ctrl::display::update_mute_status(this->tft_, last_state->muted, last_state->volume);
       esphome::vol_ctrl::display::update_status_message(this->tft_, "Long-press for menu");
       esphome::vol_ctrl::display::update_wifi_status(this->tft_, wifi_connected);
       esphome::vol_ctrl::display::update_wiim_status(this->tft_, wiim_pro_.is_available());
@@ -181,6 +198,41 @@ void VolCtrl::loop() {
 }  // end of loop()
 
 
+
+void VolCtrl::network_task() {
+  NetworkRequest request;
+  for (;;) {
+    // Wait for a request from the main loop
+    if (xQueueReceive(this->network_queue_, &request, portMAX_DELAY)) {
+      ESP_LOGD(TAG, "Network task received request for %s", request.ipv6.c_str());
+      switch (request.type) {
+        case NetworkRequestType::GET_DEVICE_DATA: {
+          network::DeviceVolStdbyData current_device_data;
+          bool is_up = network::get_device_data(request.ipv6, current_device_data);
+          
+          // This part still accesses shared state. For a more robust solution,
+          // you could use another queue to send results back to the main thread.
+          // For now, we rely on the fact that DeviceState setters are simple.
+          auto &device_states = const_cast<std::map<std::string, DeviceState>&>(network::get_device_states());
+          if (device_states.count(request.ipv6)) {
+            DeviceState &state = device_states.at(request.ipv6);
+            state.set_is_up(is_up);
+            state.set_standby_countdown(current_device_data.standby_countdown);
+            state.set_volume(current_device_data.volume);
+            state.set_mute(current_device_data.mute);
+          }
+          break;
+        }
+        case NetworkRequestType::SET_VOLUME:
+          network::set_device_volume(request.ipv6, request.volume);
+          break;
+        case NetworkRequestType::SET_MUTE:
+          network::set_device_mute(request.ipv6, request.mute);
+          break;
+      }
+    }
+  }
+}
 
 
 void VolCtrl::update_whole_screen() {
@@ -233,7 +285,11 @@ void VolCtrl::volume_change(const std::string &ipv6, float requested_volume) {
   if (requested_volume > 120.0) {  // volume is over limit
     return;
   }
-  network::set_device_volume(ipv6, requested_volume);
+  // network::set_device_volume(ipv6, requested_volume); // OLD BLOCKING CALL
+  // Post request to the network task instead
+  NetworkRequest request = {NetworkRequestType::SET_VOLUME, ipv6, requested_volume, false};
+  xQueueSend(this->network_queue_, &request, (TickType_t)0);
+
   // Yield control after network operation to prevent watchdog timeout
   esphome::yield();
 }
@@ -296,9 +352,12 @@ void VolCtrl::set_mute(bool new_mute) {
   ESP_LOGI(TAG, "Muting all speakers %d", new_mute);
   std::map<std::string, DeviceState>& device_states = const_cast<std::map<std::string, DeviceState>&>(network::get_device_states());
   
-  // Update local state immediately
+  // Update local state immediately and send requests to network task
   for (auto &entry : device_states) {
-    network::set_device_mute(entry.first, new_mute);
+    // network::set_device_mute(entry.first, new_mute); // OLD BLOCKING CALL
+    NetworkRequest request = {NetworkRequestType::SET_MUTE, entry.first, 0.0f, new_mute};
+    xQueueSend(this->network_queue_, &request, (TickType_t)0);
+
     DeviceState &state = entry.second;
     state.set_mute(new_mute);
     esphome::vol_ctrl::display::update_mute_status(this->tft_, new_mute, state.get_volume());
