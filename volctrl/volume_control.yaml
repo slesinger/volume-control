@@ -26,6 +26,14 @@ esphome:
       - -Isrc/esphome/components/psram
       - -Isrc/esphome/components/wifi
       - -Isrc/esphome/components/spi              # The MOST IMPORTANT one
+  on_boot:
+    priority: 800
+    then:
+      - globals.set:
+          id: last_encoder_value
+          value: '0'
+      - lambda: |-
+          id(volume_encoder).publish_state(0);
 
 esp32:
   board: lolin32
@@ -102,6 +110,12 @@ vol_ctrl:
   spi_id: spi1
   backlight_pin: backlight_output
 
+globals:
+  - id: last_encoder_value
+    type: int
+    restore_value: no
+    initial_value: '0'
+
 sensor:
   - platform: rotary_encoder
     id: volume_encoder
@@ -113,19 +127,13 @@ sensor:
     on_value:
       then:
         - lambda: |-
-            static int last_value = 0;
-            
-            // Calculate relative change since last update
-            int diff = x - last_value;
-            
-            if (diff != 0) {  // Only process if there's actual movement
-              // Always explicitly request current volume from speakers through the vol_ctrl component
-              // This ensures we use the speaker's volume as the source of truth
-              id(my_vol_ctrl).process_encoder_change(diff);
-              
-              // Update our position tracking
-              last_value = x;
-            }
+            int c = id(volume_encoder).state;
+            int diff = c - id(last_encoder_value);
+            ESP_LOGI("vol_ctrl", "Encoder: c=%d, last_value=%d, diff=%d", c, id(last_encoder_value), diff);
+            //if (diff != 0) {  // Only process if there's actual movement
+            id(my_vol_ctrl).process_encoder_change(diff);
+            id(last_encoder_value) = c;
+            //}
 
 binary_sensor:
   - platform: gpio

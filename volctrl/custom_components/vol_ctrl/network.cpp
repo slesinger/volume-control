@@ -158,7 +158,7 @@ bool set_device_volume(const std::string &ipv6, float volume) {
   std::string command = "{\"audio\":{\"out\":{\"level\":" + std::to_string(volume) + "}}}";
   std::string response;
   if (network::send_ssc_command(ipv6, command, response)) {
-    ESP_LOGI(TAG, "Successfully set volume to %.1f for device %s, response: %s", volume, ipv6.c_str(), response.c_str());
+    // ESP_LOGI(TAG, "Successfully set volume to %.1f for device %s, response: %s", volume, ipv6.c_str(), response.c_str());
     return true;
   } else {
     ESP_LOGE(TAG, "Failed to set volume for device %s - network error", ipv6.c_str());
