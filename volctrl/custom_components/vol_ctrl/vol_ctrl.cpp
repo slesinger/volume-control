@@ -7,6 +7,9 @@
 #include "network.h"
 #include "utils.h"
 #include "esphome/core/hal.h"
+#include "esphome/core/application.h"
+#include <driver/rtc_io.h>
+#include <esp_sleep.h>
 
 namespace esphome
 {
@@ -27,12 +30,16 @@ namespace esphome
       this->tft_->fillScreen(TFT_BLACK);
       // Do not display anything yet, wait for main loop to draw the UI
 
-      // Initialize backlight if configured
-      if (this->backlight_pin_ != nullptr)
+      // Restore persisted settings (brightness, deep sleep timeout)
+      this->settings_pref_ = global_preferences->make_preference<Settings>(fnv1_hash("vol_ctrl_settings"));
+      Settings saved;
+      if (this->settings_pref_.load(&saved) && saved.brightness >= 0 && saved.brightness <= 100 &&
+          saved.deep_sleep_timeout >= 0)
       {
-        ESP_LOGCONFIG(TAG, "Setting backlight to 100%%");
-        this->backlight_pin_->set_level(1.0);
+        this->backlight_level_ = saved.brightness;
+        this->deep_sleep_timeout_ = saved.deep_sleep_timeout;
       }
+      apply_brightness_();
 
       // Initialize network subsystem
       network::init();
@@ -46,6 +53,8 @@ namespace esphome
     {
       ESP_LOGCONFIG(TAG, "Volume Control:");
       ESP_LOGCONFIG(TAG, "  Max volume: %.1f dB", this->max_volume_);
+      ESP_LOGCONFIG(TAG, "  Brightness: %d%%", this->backlight_level_);
+      ESP_LOGCONFIG(TAG, "  Deep sleep timeout: %d s (0 = off)", this->deep_sleep_timeout_);
     }
 
     float VolCtrl::clamp_volume_(float volume) const
@@ -122,6 +131,7 @@ namespace esphome
       uint32_t now = millis();
       const bool wifi_connected = wifi::global_wifi_component->is_connected();
       network::set_online(wifi_connected);
+      check_deep_sleep_(now);
 
       if (!wifi_connected)
       {
@@ -153,6 +163,107 @@ namespace esphome
       force_redraw_ = false;
     } // end of loop()
 
+    void VolCtrl::save_settings_()
+    {
+      Settings settings{this->backlight_level_, this->deep_sleep_timeout_};
+      this->settings_pref_.save(&settings);
+    }
+
+    void VolCtrl::apply_brightness_()
+    {
+      if (this->backlight_pin_ != nullptr)
+        this->backlight_pin_->set_level(this->backlight_level_ / 100.0f);
+    }
+
+    void VolCtrl::set_display_brightness(int brightness)
+    {
+      this->backlight_level_ = std::min(std::max(brightness, 0), 100);
+      ESP_LOGI(TAG, "Display brightness %d%%", this->backlight_level_);
+      apply_brightness_();
+      save_settings_();
+    }
+
+    void VolCtrl::set_deep_sleep_timeout(int seconds)
+    {
+      this->deep_sleep_timeout_ = std::max(seconds, 0);
+      this->unavailable_since_ = 0;
+      save_settings_();
+    }
+
+    // Deep sleep once every speaker has been unreachable for deep_sleep_timeout_ seconds (0 = disabled)
+    void VolCtrl::check_deep_sleep_(uint32_t now)
+    {
+      if (this->deep_sleep_timeout_ <= 0)
+        return;
+      bool any_up = false;
+      for (auto &entry : network::get_device_states())
+        any_up |= entry.second.is_up;
+      if (any_up)
+      {
+        this->unavailable_since_ = 0;
+        return;
+      }
+      if (this->unavailable_since_ == 0)
+      {
+        this->unavailable_since_ = now ? now : 1;
+        ESP_LOGI(TAG, "No speaker reachable, deep sleep in %d s", this->deep_sleep_timeout_);
+      }
+      else if ((now - this->unavailable_since_) / 1000 >= static_cast<uint32_t>(this->deep_sleep_timeout_))
+      {
+        deep_sleep();
+      }
+    }
+
+    void VolCtrl::deep_sleep()
+    {
+      ESP_LOGI(TAG, "Entering deep sleep, press the encoder button to wake up");
+      if (this->tft_ != nullptr)
+      {
+        this->tft_->fillScreen(TFT_BLACK);
+        this->tft_->writecommand(0x10);  // ST7789 SLPIN
+      }
+      if (this->backlight_pin_ != nullptr)
+        this->backlight_pin_->set_level(0.0f);
+
+      // The encoder button (GPIO25, active low) wakes the chip. The digital pull-up is off in deep sleep,
+      // so enable the RTC pull-up or the pin floats and wakes the chip spuriously.
+      rtc_gpio_pullup_en(GPIO_NUM_25);
+      rtc_gpio_pulldown_dis(GPIO_NUM_25);
+      esp_sleep_enable_ext0_wakeup(GPIO_NUM_25, 0);
+      App.run_safe_shutdown_hooks();  // flush logs / preferences, close API connections
+      esp_deep_sleep_start();
+    }
+
+    // Menu editors for the volume settings submenu (rows: 0 back, 1 step, 2 backlight, 3 display timeout, 4 deep sleep)
+    void VolCtrl::draw_volume_settings_values_()
+    {
+      display::draw_menu_value(this->tft_, 2, std::to_string(this->backlight_level_) + "%");
+      display::draw_menu_value(this->tft_, 4,
+                               this->deep_sleep_timeout_ > 0 ? std::to_string(this->deep_sleep_timeout_ / 60) + " min" : "off");
+    }
+
+    void VolCtrl::cycle_deep_sleep_timeout_()
+    {
+      static const int values[] = {300, 600, 900, 1800, 0};  // seconds, 0 = off
+      int next = 0;
+      for (size_t i = 0; i < sizeof(values) / sizeof(values[0]); i++)
+      {
+        if (values[i] == this->deep_sleep_timeout_)
+        {
+          next = (i + 1) % (sizeof(values) / sizeof(values[0]));
+          break;
+        }
+      }
+      set_deep_sleep_timeout(values[next]);
+    }
+
+    void VolCtrl::exit_brightness_adjustment()
+    {
+      this->adjusting_brightness_ = false;
+      display::draw_menu_screen(this->tft_, menu_level_, menu_position_, menu_items_count_);
+      draw_volume_settings_values_();
+    }
+
     void VolCtrl::update_whole_screen()
     {
       this->tft_->fillScreen(TFT_BLACK);
@@ -179,6 +290,11 @@ namespace esphome
 
     void VolCtrl::button_released()
     {
+      if (adjusting_brightness_)
+      {
+        exit_brightness_adjustment();
+        return;
+      }
       uint32_t press_duration = millis() - button_press_time_;
       if (press_duration > 300)
       { // long press threshold
@@ -356,8 +472,8 @@ namespace esphome
             // Volume settings submenu
             menu_level_ = 1; // Enter volume settings submenu
             menu_position_ = 0;
-            menu_items_count_ = 7;
-            // TODO: Implement volume settings submenu
+            menu_items_count_ = 5;
+            // TODO: volume step and display timeout items
           }
           break;
 
@@ -368,6 +484,21 @@ namespace esphome
             menu_level_ = 0;
             menu_position_ = 0;
             menu_items_count_ = 7;
+          }
+          else if (menu_items_count_ == 5)
+          {
+            // Volume settings submenu
+            if (menu_position_ == 2)
+            {
+              ESP_LOGI(TAG, "Entering brightness adjustment");
+              adjusting_brightness_ = true;
+              display::draw_brightness_adjustment_screen(this->tft_, backlight_level_);
+              return;
+            }
+            else if (menu_position_ == 4)
+            {
+              cycle_deep_sleep_timeout_();
+            }
           }
           // TODO: Implement other EQ submenu items
           break;
@@ -397,6 +528,8 @@ namespace esphome
         ESP_LOGI("vol_ctrl", "Menu: level=%d, position=%d, items=%d", menu_level_, menu_position_, menu_items_count_);
         // Redraw the menu screen
         esphome::vol_ctrl::display::draw_menu_screen(this->tft_, menu_level_, menu_position_, menu_items_count_);
+        if (menu_level_ == 1 && menu_items_count_ == 5)
+          draw_volume_settings_values_();
       }
     }
 
@@ -452,6 +585,18 @@ namespace esphome
     {
       if (diff == 0)
         return;
+
+      if (adjusting_brightness_)
+      {
+        int before = backlight_level_;
+        int target = std::min(std::max(before + diff * 5, 0), 100);
+        if (target != before)
+        {
+          set_display_brightness(target);
+          display::draw_brightness_adjustment_screen(this->tft_, backlight_level_);
+        }
+        return;
+      }
 
       if (in_menu_)
       {

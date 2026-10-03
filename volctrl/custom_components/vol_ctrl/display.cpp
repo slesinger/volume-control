@@ -123,7 +123,7 @@ void update_volume_display(TFT_eSPI *tft, float volume, bool user_adjusting) {
 
   // Format volume display
   if (volume < -0.0f) {
-    snprintf(buf, sizeof(buf), "--");
+    snprintf(buf, sizeof(buf), " -- ");  // padded: overwrites leftover digits
   } else {
     int vol_int = static_cast<int>(volume);
     snprintf(buf, sizeof(buf), "%02d", vol_int);
@@ -237,7 +237,7 @@ void draw_menu_screen(TFT_eSPI *tft, int menu_level, int menu_position, int menu
         tft->drawString("4. Auto standby", MENU_LEFT, 130);
         break;
         
-      case 7: // Volume settings submenu
+      case 5: // Volume settings submenu
         tft->drawString("VOLUME SETTINGS", 10, 10);
         tft->setTextColor(TFT_WHITE, TFT_BLACK);
         tft->setTextFont(2);
@@ -245,7 +245,7 @@ void draw_menu_screen(TFT_eSPI *tft, int menu_level, int menu_position, int menu
         tft->drawString("1. Volume step", MENU_LEFT, 70);
         tft->drawString("2. Backlight intensity", MENU_LEFT, 90);
         tft->drawString("3. Display timeout", MENU_LEFT, 110);
-        tft->drawString("4. Deep sleep timeout", MENU_LEFT, 90);
+        tft->drawString("4. Deep sleep timeout", MENU_LEFT, 130);
         break;
         
       default:
@@ -258,6 +258,48 @@ void draw_menu_screen(TFT_eSPI *tft, int menu_level, int menu_position, int menu
   
   // Draw highlight for current position
   draw_menu_item_highlight(tft, menu_position, -1);
+}
+
+
+void draw_menu_value(TFT_eSPI *tft, int position, const std::string &value) {
+  const int ROW_Y = 50 + position * 20;
+  tft->fillRect(150, ROW_Y, 90, 16, TFT_BLACK);
+  tft->setTextFont(2);
+  tft->setTextColor(TFT_YELLOW, TFT_BLACK);
+  tft->setTextDatum(TR_DATUM);
+  tft->drawString(value.c_str(), 236, ROW_Y);
+  tft->setTextDatum(TL_DATUM);
+}
+
+void draw_brightness_adjustment_screen(TFT_eSPI *tft, int brightness) {
+  tft->fillScreen(TFT_BLACK);
+  tft->setTextDatum(TL_DATUM);
+
+  tft->setTextFont(4);
+  tft->setTextColor(TFT_ORANGE, TFT_BLACK);
+  tft->drawString("BRIGHTNESS", 10, 10);
+
+  tft->setTextFont(6);
+  tft->setTextColor(TFT_YELLOW, TFT_BLACK);
+  char brightness_str[16];
+  snprintf(brightness_str, sizeof(brightness_str), "%d%%", brightness);
+  tft->drawString(brightness_str, (tft->width() - tft->textWidth(brightness_str)) / 2, 80);
+
+  const int BAR_WIDTH = 200;
+  const int BAR_HEIGHT = 20;
+  const int BAR_X = (tft->width() - BAR_WIDTH) / 2;
+  const int BAR_Y = 150;
+  tft->drawRect(BAR_X, BAR_Y, BAR_WIDTH, BAR_HEIGHT, TFT_WHITE);
+  int fill_width = (BAR_WIDTH - 4) * brightness / 100;
+  if (fill_width > 0)
+    tft->fillRect(BAR_X + 2, BAR_Y + 2, fill_width, BAR_HEIGHT - 4, TFT_YELLOW);
+
+  tft->setTextFont(2);
+  tft->setTextColor(TFT_WHITE, TFT_BLACK);
+  tft->setTextDatum(TC_DATUM);
+  tft->drawString("Turn encoder to adjust", tft->width() / 2, 190);
+  tft->drawString("Press button to save", tft->width() / 2, 210);
+  tft->setTextDatum(TL_DATUM);
 }
 
 }  // namespace display

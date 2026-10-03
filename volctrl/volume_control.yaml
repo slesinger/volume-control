@@ -73,6 +73,16 @@ api:
       then:
         - lambda: 'id(my_vol_ctrl).toggle_mute();'
     
+    - service: set_display_brightness
+      variables:
+        brightness: int
+      then:
+        - lambda: 'id(my_vol_ctrl).set_display_brightness(brightness);'
+
+    - service: deep_sleep
+      then:
+        - lambda: 'id(my_vol_ctrl).deep_sleep();'
+
     - service: mute
       then:
         - lambda: 'id(my_vol_ctrl).mute();'

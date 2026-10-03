@@ -7,6 +7,7 @@
 #include <string>
 #include "device_state.h"
 #include "network.h"
+#include "esphome/core/preferences.h"
 
 // Forward-declare the TFT_eSPI class instead of including the whole header
 class TFT_eSPI;
@@ -40,6 +41,15 @@ class VolCtrl : public Component, public spi::SPIDevice<spi::BIT_ORDER_MSB_FIRST
   void set_backlight_pin(output::FloatOutput *backlight_pin) { backlight_pin_ = backlight_pin; }
   void set_max_volume(float max_volume) { max_volume_ = max_volume; }
   float get_max_volume() const { return max_volume_; }
+
+  // Display brightness (0-100 %), persisted in NVS
+  void set_display_brightness(int brightness);
+  int get_display_brightness() const { return backlight_level_; }
+
+  // Deep sleep: after this many seconds without a reachable speaker (0 = never), persisted in NVS
+  void set_deep_sleep_timeout(int seconds);
+  int get_deep_sleep_timeout() const { return deep_sleep_timeout_; }
+  void deep_sleep();  // wakes on the encoder button
 
   // Menu navigation methods
   void menu_up();
@@ -98,6 +108,26 @@ class VolCtrl : public Component, public spi::SPIDevice<spi::BIT_ORDER_MSB_FIRST
 
   // Backlight control
   output::FloatOutput *backlight_pin_{nullptr};
+  int backlight_level_{100};  // 0-100 %
+  bool adjusting_brightness_{false};  // menu brightness editor is open
+  void apply_brightness_();
+  void exit_brightness_adjustment();
+  void draw_volume_settings_values_();
+  void cycle_deep_sleep_timeout_();
+
+  // Deep sleep
+  int deep_sleep_timeout_{600};  // seconds, 0 = disabled
+  uint32_t unavailable_since_{0};  // millis() when the last speaker went away, 0 = at least one is reachable
+  void check_deep_sleep_(uint32_t now);
+
+  // Settings persisted in NVS
+  struct Settings
+  {
+    int brightness;
+    int deep_sleep_timeout;
+  };
+  ESPPreferenceObject settings_pref_;
+  void save_settings_();
 };
 
 }  // namespace vol_ctrl
