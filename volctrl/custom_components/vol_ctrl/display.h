@@ -12,13 +12,16 @@ namespace esphome
         namespace display
         {
 
+            // State of something that is established asynchronously: shown orange while PENDING
+            enum class LinkState { PENDING, UP, DOWN };
+
             // Display drawing functions
             void draw_wifi_icon(TFT_eSPI *tft, bool connected);
             void draw_forbidden_icon(TFT_eSPI *tft, int x, int y);
 
             // Partial section updates for efficient rendering
-            void update_wifi_status(TFT_eSPI *tft, bool connected);
-            void update_wiim_status(TFT_eSPI *tft, bool available);
+            void update_wifi_status(TFT_eSPI *tft, LinkState state);
+            void update_wiim_status(TFT_eSPI *tft, LinkState state);
             void update_speaker_dots(TFT_eSPI *tft, const std::map<std::string, DeviceState> &states);
             void update_datetime(TFT_eSPI *tft, const std::string &datetime);
             void update_standby_time(TFT_eSPI *tft, int standby_countdown);

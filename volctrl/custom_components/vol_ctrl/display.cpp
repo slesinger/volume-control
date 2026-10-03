@@ -73,9 +73,17 @@ void update_standby_time(TFT_eSPI *tft, int standby_time) {
   tft->drawString(buf, region.x, region.y + 1);
 }
 
-void update_wifi_status(TFT_eSPI *tft, bool connected) {
+static uint16_t link_color(LinkState state) {
+  switch (state) {
+    case LinkState::UP: return TFT_GREEN;
+    case LinkState::DOWN: return TFT_RED;
+    default: return TFT_ORANGE;
+  }
+}
+
+void update_wifi_status(TFT_eSPI *tft, LinkState state) {
   ScreenRegion region = get_wifi_region();
-  uint16_t color = connected ? TFT_GREEN : TFT_RED;
+  uint16_t color = link_color(state);
 
   // Arcs centred on the bottom edge of the top row; the viewport clips the lower halves away
   const int cx = region.x + region.w / 2;
@@ -90,12 +98,12 @@ void update_wifi_status(TFT_eSPI *tft, bool connected) {
   tft->resetViewport();
 }
 
-void update_wiim_status(TFT_eSPI *tft, bool available) {
+void update_wiim_status(TFT_eSPI *tft, LinkState state) {
   ScreenRegion region = get_wiim_region();
   tft->fillRect(region.x, region.y, region.w, region.h, TFT_BLACK);
   tft->setTextFont(4);
   tft->setTextSize(1);
-  tft->setTextColor(available ? TFT_GREEN : TFT_RED, TFT_BLACK);
+  tft->setTextColor(link_color(state), TFT_BLACK);
   tft->setTextDatum(TL_DATUM);
   tft->drawString("W", region.x + 2, region.y + 1);
 }
@@ -109,7 +117,7 @@ void update_speaker_dots(TFT_eSPI *tft, const std::map<std::string, DeviceState>
 
   for (const auto &entry : states) {
     const DeviceState &state = entry.second;
-    uint16_t color = state.is_up ? TFT_GREEN : TFT_RED;
+    uint16_t color = !state.known ? TFT_ORANGE : (state.is_up ? TFT_GREEN : TFT_RED);
     int x = region.x + idx * (rect_width + spacing);
     tft->fillRect(x, region.y, rect_width, rect_height, color);
     tft->drawRect(x, region.y, rect_width, rect_height, TFT_DARKGREY);

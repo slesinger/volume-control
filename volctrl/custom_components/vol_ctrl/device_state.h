@@ -12,6 +12,7 @@ namespace esphome
     struct DeviceState
     {
       bool is_up = false; // True if device is reachable
+      bool known = false; // True once the first poll finished (until then "unreachable" just means "not asked yet")
       float requested_volume = -1.0f; // Volume requested by user, not yet applied
       bool muted = false;
       // float volume = -1.0f;  // -1.0f indicates volume not set

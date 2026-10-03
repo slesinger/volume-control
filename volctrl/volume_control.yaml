@@ -150,6 +150,7 @@ output:
     pin: GPIO17
     frequency: 1000Hz
     min_power: 0.1
+    zero_means_zero: true  # set_level(0) = really off (else it would stay at min_power); used for deep sleep
     max_power: 1.0
 
 vol_ctrl:

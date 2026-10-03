@@ -8,6 +8,7 @@
 #include "device_state.h"
 #include "network.h"
 #include "wiim.h"
+#include "display.h"
 #include "esphome/core/preferences.h"
 
 // Forward-declare the TFT_eSPI class instead of including the whole header
@@ -92,6 +93,7 @@ class VolCtrl : public Component, public spi::SPIDevice<spi::BIT_ORDER_MSB_FIRST
   PollResult apply_poll_updates_();
   // Speaker whose values represent the group on screen (first reachable one, else the first).
   DeviceState *representative_state_();
+  display::LinkState wiim_link_state_();
   float clamp_volume_(float volume) const;
   // Clamp and queue a volume for one speaker, updating its state optimistically. Skips speakers known to be down.
   bool apply_volume_(const std::string &ipv6, DeviceState &state, float volume);
@@ -106,7 +108,8 @@ class VolCtrl : public Component, public spi::SPIDevice<spi::BIT_ORDER_MSB_FIRST
   // UI state tracking
   uint32_t last_draw_{0};
   PollResult pending_changes_;  // changes folded in since the last redraw
-  uint32_t last_wifi_draw_{0};
+  bool wifi_shown_{false};  // for detecting changes that deserve an immediate redraw
+  display::LinkState wiim_shown_{display::LinkState::PENDING};
   bool force_redraw_{true};  // draw everything on the first poll, e.g. dots for speakers that start offline
 
   // Encoder button

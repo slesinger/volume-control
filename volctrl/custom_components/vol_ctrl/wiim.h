@@ -12,6 +12,7 @@ namespace wiim {
 
 struct Status {
   bool available = false;  // last request succeeded
+  bool checked = false;    // the WiiM has been looked for at least once (until then: still searching)
   std::string input;       // "Network", "Bluetooth", "Line-In", "Optical" ("" until the first poll)
   bool playing = false;
   std::string title;

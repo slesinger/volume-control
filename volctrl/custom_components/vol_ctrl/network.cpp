@@ -91,6 +91,13 @@ bool send_ssc_command(const std::string &ipv6, const std::string &command, std::
     return false;
   }
 
+  // Close with RST instead of FIN: no TIME_WAIT. We open a connection per request (every 1.5 s per speaker), and
+  // lingering lwIP PCBs eventually exhaust the pool ("Failed to create socket: 105 No buffer space available").
+  struct linger abortive;
+  abortive.l_onoff = 1;
+  abortive.l_linger = 0;
+  setsockopt(sock, SOL_SOCKET, SO_LINGER, &abortive, sizeof(abortive));
+
   struct timeval timeout;
   timeout.tv_sec = IO_TIMEOUT_MS / 1000;
   timeout.tv_usec = (IO_TIMEOUT_MS % 1000) * 1000;
@@ -157,6 +164,7 @@ struct Link {
   uint32_t last_write_ms = 0;
   uint32_t next_poll_ms = 0;
   uint8_t failed_polls = 0;   // consecutive, drives the back-off
+  bool was_up = false;
 };
 
 constexpr uint32_t POLL_INTERVAL_UP_MS = 1500;
@@ -264,7 +272,12 @@ void worker_task(void *) {
       std::lock_guard<std::mutex> lock(mtx);
       if (epoch != l.write_epoch) {
         l.next_poll_ms = millis() + 100;  // a write happened meanwhile, the reading is stale
+      } else if (!update.is_up && l.was_up && l.failed_polls == 0) {
+        // A single failed poll of a speaker that was fine is usually a glitch: look again before reporting it down
+        l.failed_polls = 1;
+        l.next_poll_ms = millis() + 300;
       } else {
+        l.was_up = update.is_up;
         l.failed_polls = update.is_up ? 0 : (l.failed_polls < 255 ? l.failed_polls + 1 : 255);
         l.next_poll_ms = millis() + (update.is_up ? POLL_INTERVAL_UP_MS
                                      : l.failed_polls <= FAST_RETRIES ? POLL_INTERVAL_FAST_RETRY_MS

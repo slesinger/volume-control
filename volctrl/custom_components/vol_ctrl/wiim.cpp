@@ -152,6 +152,7 @@ void set_available(bool available) {
   if (status.available != available)
     ESP_LOGI(TAG, "WiiM %s", available ? "online" : "offline");
   status.available = available;
+  status.checked = true;
 }
 
 // Refresh the cached status (and track metadata while playing). Returns false if the WiiM did not answer.
@@ -161,6 +162,7 @@ bool poll(const std::string &host) {
 
   Status next;
   next.available = true;
+  next.checked = true;
   std::string value;
   next.input = input_for_mode(json_string(body, "mode", value) ? atoi(value.c_str()) : 10);
   next.playing = json_string(body, "status", value) && value == "play";
@@ -236,6 +238,7 @@ void worker_task(void *) {
         ip = found;
       } else {
         ESP_LOGD(TAG, "No WiiM found via SSDP");
+        set_available(false);
         vTaskDelay(pdMS_TO_TICKS(RETRY_INTERVAL_MS));
       }
       continue;

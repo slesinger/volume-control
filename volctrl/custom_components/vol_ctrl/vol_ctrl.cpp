@@ -8,7 +8,9 @@
 #include "utils.h"
 #include "esphome/core/hal.h"
 #include "esphome/core/application.h"
+#include <driver/gpio.h>
 #include <driver/rtc_io.h>
+#include <soc/gpio_sig_map.h>
 #include <esp_sleep.h>
 
 namespace esphome
@@ -18,6 +20,8 @@ namespace esphome
 
     static const char *const TAG = "vol_ctrl";
     constexpr uint32_t LONG_PRESS_MS = 300;
+    constexpr gpio_num_t BACKLIGHT_GPIO = GPIO_NUM_17;  // same pin as the ledc output in volume_control.yaml
+    constexpr int MIN_BRIGHTNESS = 5;                   // %, so the editor cannot make the screen unreadable
 
     void VolCtrl::setup()
     {
@@ -28,14 +32,16 @@ namespace esphome
       this->tft_->init();
       this->tft_->setRotation(0);
       this->tft_->fillScreen(TFT_BLACK);
-      // The component sets up before WiFi (see get_setup_priority) and the other setups wait for the connection,
-      // so say so right away instead of showing a black screen
-      display::update_status_message(this->tft_, "Connecting to WiFi");
+      // Nothing is drawn here: loop() draws the first frame, and it runs even while WiFi is still connecting
+
+      // After a wake-up from deep sleep the backlight pin is still latched low (see deep_sleep())
+      gpio_hold_dis(BACKLIGHT_GPIO);
+      gpio_deep_sleep_hold_dis();
 
       // Restore persisted settings (brightness, deep sleep timeout)
       this->settings_pref_ = global_preferences->make_preference<Settings>(fnv1_hash("vol_ctrl_settings"));
       Settings saved;
-      if (this->settings_pref_.load(&saved) && saved.brightness >= 0 && saved.brightness <= 100 &&
+      if (this->settings_pref_.load(&saved) && saved.brightness >= MIN_BRIGHTNESS && saved.brightness <= 100 &&
           saved.deep_sleep_timeout >= 0)
       {
         this->backlight_level_ = saved.brightness;
@@ -96,6 +102,11 @@ namespace esphome
         if (it == device_states.end())
           continue;
         DeviceState &state = it->second;
+        if (!state.known)
+        {
+          state.known = true;
+          result.is_up_changed = true;  // dot turns from orange to green/red
+        }
         if (state.set_is_up(update.is_up))
         {
           result.is_up_changed = true;
@@ -123,12 +134,24 @@ namespace esphome
         display::update_mute_status(this->tft_, true, state->requested_volume);
       else if (state != nullptr && (force || changed.mute_changed))
         display::update_mute_status(this->tft_, false, state->requested_volume);
+      const bool wifi_connected = wifi::global_wifi_component->is_connected();
+      bool speakers_pending = false;
+      for (auto &entry : network::get_device_states())
+        speakers_pending |= !entry.second.known;
+
+      // Bottom line: what the device is busy with, then input / track from the WiiM, else the menu hint
       std::string message = "Long-press for menu";
-      if (this->wiim_enabled_)
+      if (!wifi_connected)
       {
-        // WiiM indicator, plus input and track on the bottom line while it is reachable
+        message = "Connecting to WiFi";
+      }
+      else if (speakers_pending)
+      {
+        message = "Finding speakers";
+      }
+      else if (this->wiim_enabled_)
+      {
         wiim::Status wiim_status = wiim::get_status();
-        display::update_wiim_status(this->tft_, wiim_status.available);
         if (wiim_status.available && !wiim_status.input.empty())
         {
           message = wiim_status.input;
@@ -137,7 +160,18 @@ namespace esphome
         }
       }
       display::update_status_message(this->tft_, message);
-      display::update_wifi_status(this->tft_, wifi::global_wifi_component->is_connected());
+
+      if (this->wiim_enabled_)
+        display::update_wiim_status(this->tft_, wiim_link_state_());
+      display::update_wifi_status(this->tft_, wifi_connected ? display::LinkState::UP : display::LinkState::PENDING);
+    }
+
+    display::LinkState VolCtrl::wiim_link_state_()
+    {
+      wiim::Status status = wiim::get_status();
+      if (!status.checked)
+        return display::LinkState::PENDING;
+      return status.available ? display::LinkState::UP : display::LinkState::DOWN;
     }
 
     // Everything runs in ESPHome's cooperative loop, so loop() must return quickly or the watchdog resets the chip.
@@ -156,32 +190,36 @@ namespace esphome
           enter_menu();
       }
 
+      // This loop already runs while WiFi is still connecting (see get_setup_priority), so the screen comes up
+      // at once and fills in as the asynchronous steps (WiFi, speakers, WiiM) finish.
       const bool wifi_connected = wifi::global_wifi_component->is_connected();
       network::set_online(wifi_connected);
       wiim::set_online(wifi_connected);
       check_deep_sleep_(now);
 
-      if (!wifi_connected)
+      // Redraw immediately when one of the steps finished, not at the next periodic tick
+      const display::LinkState wiim_state = this->wiim_enabled_ ? wiim_link_state_() : display::LinkState::UP;
+      if (wifi_connected != wifi_shown_ || wiim_state != wiim_shown_)
       {
-        if (now - last_wifi_draw_ > 1000)
-        {
-          last_wifi_draw_ = now;
-          display::update_status_message(this->tft_, "Connecting to WiFi");
-          display::update_wifi_status(this->tft_, false);
-        }
-        return;
+        wifi_shown_ = wifi_connected;
+        wiim_shown_ = wiim_state;
+        last_draw_ = 0;
       }
 
-      PollResult changed = apply_poll_updates_();
-      pending_changes_.is_up_changed |= changed.is_up_changed;
-      pending_changes_.standby_changed |= changed.standby_changed;
-      pending_changes_.mute_changed |= changed.mute_changed;
+      PollResult changed;
+      if (wifi_connected)
+      {
+        changed = apply_poll_updates_();
+        pending_changes_.is_up_changed |= changed.is_up_changed;
+        pending_changes_.standby_changed |= changed.standby_changed;
+        pending_changes_.mute_changed |= changed.mute_changed;
+      }
 
       // The menu owns the screen; state keeps updating underneath and update_whole_screen() catches up on exit
       if (in_menu_)
         return;
 
-      // Redraw when speaker data arrived, plus periodically for the clock and WiFi icon
+      // Redraw when speaker data arrived, plus periodically for the clock and the status icons
       bool got_data = changed.received || force_redraw_;
       if (!got_data && now - last_draw_ <= 1500)
         return;
@@ -205,7 +243,7 @@ namespace esphome
 
     void VolCtrl::set_display_brightness(int brightness)
     {
-      this->backlight_level_ = std::min(std::max(brightness, 0), 100);
+      this->backlight_level_ = std::min(std::max(brightness, MIN_BRIGHTNESS), 100);
       ESP_LOGI(TAG, "Display brightness %d%%", this->backlight_level_);
       apply_brightness_();
       save_settings_();
@@ -250,8 +288,15 @@ namespace esphome
         this->tft_->fillScreen(TFT_BLACK);
         this->tft_->writecommand(0x10);  // ST7789 SLPIN
       }
+      // Backlight really off: with PWM at 0 the output would still sit at min_power (see yaml), and a pin left to
+      // the PWM peripheral floats in deep sleep. Take the pin over, drive it low and latch it through the sleep.
       if (this->backlight_pin_ != nullptr)
         this->backlight_pin_->set_level(0.0f);
+      gpio_set_direction(BACKLIGHT_GPIO, GPIO_MODE_OUTPUT);
+      gpio_matrix_out(BACKLIGHT_GPIO, SIG_GPIO_OUT_IDX, false, false);  // plain GPIO output instead of LEDC
+      gpio_set_level(BACKLIGHT_GPIO, 0);
+      gpio_hold_en(BACKLIGHT_GPIO);
+      gpio_deep_sleep_hold_en();
 
       // The encoder button (GPIO25, active low) wakes the chip. The digital pull-up is off in deep sleep,
       // so enable the RTC pull-up or the pin floats and wakes the chip spuriously.
@@ -613,7 +658,7 @@ namespace esphome
       if (adjusting_brightness_)
       {
         int before = backlight_level_;
-        int target = std::min(std::max(before + diff * 5, 0), 100);
+        int target = std::min(std::max(before + diff * 5, MIN_BRIGHTNESS), 100);
         if (target != before)
         {
           set_display_brightness(target);
