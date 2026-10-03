@@ -4,16 +4,21 @@ For DSP enabled speakers that can be controlled over network IPv6.
 
 - KH-120 II
 - KH-150
-- ??
+- there must be more ...
+
+![Volume Control Device](docs/vyrobek.png)
 
 ## Features
-- Automatic speaker discovery
+- Automatic speaker discovery (planned, use KH Tool for discovery, hardcoded)
 - Volume control
 - Mute control
 - Display of current volume level
 - Display speaker settings
-- Set parametric equalizer settings
+- Set parametric equalizer settings (planned)
 - Works with Home Assistant
+- 3 configurable buttons (e.g. input select, pause/play, next song)
+- works with Wii Pro
+- deep sleep (rotary push button to wake up)
 
 It uses Senheiser Sound Control Protocol (SSP) to control the volume of the speakers and reading and setting parameters.
 
@@ -173,6 +178,29 @@ This section shows menu structure and how to navigate through it.
   7.2. Set backlight
   7.3. Display timeout to stop backlight
   7.4. Set ESP deep sleep timeout (to save power)
+
+# Home Assistant Integration
+
+## Invoking services
+
+### Set Volume Level
+
+```yaml
+action: esphome.volume_control_set_volume
+data:
+  level: 40
+```
+
+### Toggle Mute
+
+```yaml
+action: esphome.volume_control_toggle_mute
+
+### Volume Up/Down
+
+```yaml
+action: esphome.volume_control_volume_up
+```
 
 # Resources
 

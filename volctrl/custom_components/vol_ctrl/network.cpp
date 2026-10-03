@@ -1,5 +1,6 @@
 #include "network.h"
 #include "utils.h"
+#include "wiim_pro.h"
 #include "esphome/core/log.h"
 #include <lwip/sockets.h>
 #include <lwip/inet.h>
@@ -11,9 +12,11 @@
 #include <fcntl.h>
 #include <sys/select.h>
 #include <map>
+#include <vector>
 #include "esphome/core/hal.h"
 #include <lwip/netif.h>
 #include <lwip/ip_addr.h>
+#include <esp_http_client.h>
 
 namespace esphome {
 namespace vol_ctrl {
@@ -86,12 +89,27 @@ bool send_ssc_command(const std::string &ipv6, const std::string &command, std::
     return false;
   }
 
+  // Set socket to non-blocking mode for connect timeout control
+  int flags = fcntl(sock, F_GETFL, 0);
+  if (flags < 0 || fcntl(sock, F_SETFL, flags | O_NONBLOCK) < 0) {
+    ESP_LOGE(TAG, "Failed to set socket to non-blocking: %d (%s)", errno, strerror(errno));
+    close(sock);
+    return false;
+  }
+
+  // Set socket options for send/receive timeouts
   struct timeval timeout;
-  timeout.tv_sec = IO_TIMEOUT_MS / 1000;
-  timeout.tv_usec = (IO_TIMEOUT_MS % 1000) * 1000;
-  if (setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout)) < 0 ||
-      setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout)) < 0) {
-    ESP_LOGE(TAG, "Failed to set socket timeouts: %d (%s)", errno, strerror(errno));
+  timeout.tv_sec = 0;  // Reduce to 100ms timeout for maximum UI responsiveness
+  timeout.tv_usec = 100000;  // 100ms in microseconds
+  if (setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout)) < 0) {
+    ESP_LOGE(TAG, "Failed to set receive timeout: %d (%s)", errno, strerror(errno));
+    close(sock);
+    return false;
+  }
+  
+  if (setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout)) < 0) {
+    ESP_LOGE(TAG, "Failed to set send timeout: %d (%s)", errno, strerror(errno));
+    close(sock);
     return false;
   }
 
@@ -104,10 +122,51 @@ bool send_ssc_command(const std::string &ipv6, const std::string &command, std::
     return false;
   }
 
-  if (!connect_with_timeout(sock, (struct sockaddr *) &sa, sizeof(sa), CONNECT_TIMEOUT_MS)) {
-    ESP_LOGD(TAG, "Failed to connect to %s: errno %d (%s)", ipv6.c_str(), errno, strerror(errno));
+  ESP_LOGD(TAG, "Socket created, attempting to connect to [%s]:45...", ipv6.c_str());
+  int connect_result = connect(sock, (struct sockaddr *)&sa, sizeof(sa));
+  
+  if (connect_result < 0) {
+    if (errno == EINPROGRESS) {
+      // Connection in progress, wait with select/poll for up to 100ms
+      fd_set write_fds;
+      FD_ZERO(&write_fds);
+      FD_SET(sock, &write_fds);
+      
+      struct timeval connect_timeout;
+      connect_timeout.tv_sec = 0;
+      connect_timeout.tv_usec = 300000;  // 300ms
+      
+      int select_result = select(sock + 1, nullptr, &write_fds, nullptr, &connect_timeout);
+      if (select_result <= 0) {
+        ESP_LOGE(TAG, "Connection to %s timed out or failed", ipv6.c_str());
+        close(sock);
+        return false;
+      }
+      
+      // Check if connection was successful
+      int error = 0;
+      socklen_t len = sizeof(error);
+      if (getsockopt(sock, SOL_SOCKET, SO_ERROR, &error, &len) < 0 || error != 0) {
+        ESP_LOGE(TAG, "Connection to %s failed: %s", ipv6.c_str(), strerror(error));
+        close(sock);
+        return false;
+      }
+    } else {
+      ESP_LOGE(TAG, "Failed to connect to %s: %d (errno: %d - %s)", 
+               ipv6.c_str(), connect_result, errno, strerror(errno));
+      close(sock);
+      return false;
+    }
+  }
+  
+  // Set socket back to blocking mode for send/receive operations
+  if (fcntl(sock, F_SETFL, flags) < 0) {
+    ESP_LOGE(TAG, "Failed to set socket back to blocking: %d (%s)", errno, strerror(errno));
+    close(sock);
     return false;
   }
+  
+  ESP_LOGD(TAG, "Connected to [%s]:45 in %u ms", ipv6.c_str(), millis() - start_time);
 
   // SSC messages are terminated by CRLF
   std::string request = command + "\r\n";
@@ -135,8 +194,19 @@ bool send_ssc_command(const std::string &ipv6, const std::string &command, std::
   }
   if (response.empty()) return false;
 
-  ESP_LOGD(TAG, "Received %d bytes in %u ms: %s", (int) response.size(), millis() - start_time, response.c_str());
-  return true;
+  response = std::string(buffer, bytes_received);
+  success = true;
+  
+  ESP_LOGD(TAG, "Received %d bytes in %u ms: %s", 
+          bytes_received, millis() - start_time, response.c_str());
+  
+  // Always close the socket
+  close(sock);
+  
+  // Yield control back to RTOS after network operation
+  esphome::yield();
+  
+  return success;
 }
 
 void register_device(const std::string &name, const std::string &ipv6) {

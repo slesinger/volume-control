@@ -2,6 +2,7 @@
 
 #include <map>
 #include <string>
+#include <vector>
 #include "device_state.h"
 
 namespace esphome
@@ -14,7 +15,7 @@ namespace esphome
             struct DeviceVolStdbyData
             {
                 int standby_countdown = 0;
-                float volume = 0.0f;
+                float volume = -0.1f;
                 bool mute = false;
             };
 
@@ -33,7 +34,7 @@ namespace esphome
 
             // Initialize network subsystem
             void init();
-
+            
         } // namespace network
     } // namespace vol_ctrl
 } // namespace esphome

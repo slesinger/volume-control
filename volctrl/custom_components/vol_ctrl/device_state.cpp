@@ -39,6 +39,31 @@ namespace esphome
             }
         }
 
+        float DeviceState::get_last_sent_volume()
+        {
+            return this->last_sent_volume;
+        }
+
+        void DeviceState::set_last_sent_volume(float new_last_sent_volume)
+        {
+            this->last_sent_volume = new_last_sent_volume;
+        }
+
+        float DeviceState::get_volume()
+        {
+            return this->volume;
+        }
+
+        bool DeviceState::set_volume(float new_volume)
+        {
+            if (fabs(this->volume - new_volume) > 1e-4)
+            {
+                this->volume = new_volume;
+                return true;
+            }
+            return false;
+        }
+
         bool DeviceState::set_mute(bool new_mute)
         {
             if (this->muted != new_mute)

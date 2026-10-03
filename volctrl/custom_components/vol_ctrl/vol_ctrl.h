@@ -7,9 +7,29 @@
 #include <string>
 #include "device_state.h"
 #include "network.h"
+#include "esphome/core/hal.h"
+#include <esp_sleep.h>
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#include "freertos/queue.h"
 
 // Forward-declare the TFT_eSPI class instead of including the whole header
 class TFT_eSPI;
+
+// Enum to define network request types
+enum class NetworkRequestType {
+  GET_DEVICE_DATA,
+  SET_VOLUME,
+  SET_MUTE
+};
+
+// Struct for messages sent to the network task
+struct NetworkRequest {
+  NetworkRequestType type;
+  std::string ipv6;
+  float volume;
+  bool mute;
+};
 
 namespace esphome {
 namespace vol_ctrl {
@@ -30,13 +50,34 @@ class VolCtrl : public Component, public spi::SPIDevice<spi::BIT_ORDER_MSB_FIRST
   void button_pressed();
   void button_released();
   void toggle_mute();
+  void mute();
+  void unmute();
+  void set_mute(bool new_mute);
   void enter_menu();
   void exit_menu();
-
-  // Configuration
+  
+  // Media control methods
+  void pause();
+  void next();
+  void cycle_input();
+  void set_input(const std::string &input);
+  std::string get_current_input();
+  
+  // Set backlight control pin
   void set_backlight_pin(output::FloatOutput *backlight_pin) { backlight_pin_ = backlight_pin; }
-  void set_max_volume(float max_volume) { max_volume_ = max_volume; }
-
+  void set_volume_step(float step) { volume_step_ = step; }
+  
+  // Display brightness control (0-100%)
+  void set_display_brightness(int brightness);
+  int get_display_brightness() const { return backlight_level_; }
+  
+  // Deep sleep settings
+  void set_deep_sleep_timeout(int timeout_seconds) { deep_sleep_timeout_ = timeout_seconds; }
+  int get_deep_sleep_timeout() const { return deep_sleep_timeout_; }
+  
+  // Deep sleep functionality
+  void deep_sleep();
+  
   // Menu navigation methods
   void menu_up();
   void menu_down();
@@ -70,23 +111,49 @@ class VolCtrl : public Component, public spi::SPIDevice<spi::BIT_ORDER_MSB_FIRST
 
   // TFT display instance
   TFT_eSPI *tft_{nullptr};
-
-  // UI state tracking
-  uint32_t last_device_check_{0};
-  uint32_t last_wifi_draw_{0};
-  bool force_redraw_{true};  // draw everything on the first poll, e.g. dots for speakers that start offline
-
+  
   // Menu state
   bool in_menu_{false};
   int menu_level_{0};  // 0 = main menu, 1 = submenu, etc.
   int menu_position_{0};
   int menu_items_count_{0};
+  bool adjusting_brightness_{false};  // Flag to indicate brightness adjustment mode
+  float volume_step_{1.0f};  // Default 1dB steps
 
-  // Upper bound for any volume sent to the speakers (dB)
-  float max_volume_{120.0f};
+  // Display settings
+  int backlight_level_{100};  // 0-100%
+  int display_timeout_{60};  // In seconds
+  
+  // Deep sleep settings
+  int deep_sleep_timeout_{600};  // In seconds (10 minutes default)
+  uint32_t speakers_unavailable_since_{0};  // Timestamp when all speakers became unavailable
+  
+  // Task and Queue handles
+  TaskHandle_t network_task_handle_ = nullptr;
+  QueueHandle_t network_queue_ = nullptr;
+
+  // Static wrapper for task
+  static void network_task_wrapper(void *param) {
+    static_cast<VolCtrl*>(param)->network_task();
+  }
+  void network_task();
 
   // Backlight control
   output::FloatOutput *backlight_pin_{nullptr};
+  void exit_brightness_adjustment();
+
+  // Rate limiting for volume changes
+  uint32_t last_volume_change_{0}; // Timestamp of last volume change to rate limit
+  uint32_t main_loop_counter{0}; // Counter for main loop timing
+  
+  bool user_adjusting_volume_{false}; // Flag to indicate user is actively changing volume
+
+private:
+  // Last known state for change detection
+  float last_known_volume_{-1.0f};
+  bool last_known_mute_state_{false};
+  int last_known_standby_countdown_{-1};
+  bool last_known_is_up_{false};
 };
 
 }  // namespace vol_ctrl
