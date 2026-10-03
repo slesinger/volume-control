@@ -7,234 +7,190 @@
 #include "display.h"
 #include "network.h"
 #include "utils.h"
+#include "wiim_pro.h"
 #include "esphome/core/hal.h"
-#include "esphome/core/application.h"
-#include <driver/gpio.h>
-#include <driver/rtc_io.h>
-#include <soc/gpio_sig_map.h>
 #include <esp_sleep.h>
 
-namespace esphome
-{
-  namespace vol_ctrl
-  {
+namespace esphome {
+namespace vol_ctrl {
 
-    static const char *const TAG = "vol_ctrl";
-    constexpr uint32_t LONG_PRESS_MS = 300;
-    constexpr gpio_num_t BACKLIGHT_GPIO = GPIO_NUM_17;  // same pin as the ledc output in volume_control.yaml
-    constexpr int MIN_BRIGHTNESS = 5;                   // %, so the editor cannot make the screen unreadable
+static const char *const TAG = "vol_ctrl";
+uint32_t button_press_time_ = 0;
+WiimPro wiim_pro_;
 
-    void VolCtrl::setup()
-    {
-      ESP_LOGCONFIG(TAG, "Setting up Volume Control...");
+void VolCtrl::setup() {
+  ESP_LOGCONFIG(TAG, "Setting up Volume Control...");
+  
+  // Initialize the display
+  this->tft_ = new TFT_eSPI();
+  this->tft_->init();
+  this->tft_->setRotation(0);
+  this->tft_->fillScreen(TFT_BLACK);
+  
+  // Show startup message immediately
+  esphome::vol_ctrl::display::update_status_message(this->tft_, "Starting up...");
+  
+    // Create a queue to handle network requests
+  this->network_queue_ = xQueueCreate(10, sizeof(NetworkRequest));
 
-      // Initialize the display
-      this->tft_ = new TFT_eSPI();
-      this->tft_->init();
-      this->tft_->setRotation(0);
-      display::clear_screen(this->tft_);
-      // Nothing is drawn here: loop() draws the first frame, and it runs even while WiFi is still connecting
+  // Create a dedicated task for network operations on Core 0
+  xTaskCreatePinnedToCore(
+      network_task_wrapper,   // Function to implement the task
+      "NetworkTask",          // Name of the task
+      4096,                   // Stack size in words
+      this,                   // Task input parameter
+      1,                      // Priority of the task
+      &this->network_task_handle_, // Task handle
+      0                       // Core where the task should run
+  );
 
-      // After a wake-up from deep sleep the backlight pin is still latched low (see deep_sleep())
-      gpio_hold_dis(BACKLIGHT_GPIO);
-      gpio_deep_sleep_hold_dis();
+  // Initialize backlight if configured
+  if (this->backlight_pin_ != nullptr) {
+    ESP_LOGCONFIG(TAG, "Setting backlight to 100%%");
+    this->backlight_pin_->set_level(1.0);
+  }
+  
+  // Initialize network subsystem (non-blocking)
+  network::init();  // this registers speaker's IPv6 addresses
+  
+  main_loop_counter = millis();
+  
+  // Add a small delay to let things settle
+  esphome::delay(500);
+  update_whole_screen();
+}
 
-      // Restore persisted settings
-      this->settings_pref_ = global_preferences->make_preference<Settings>(fnv1_hash("vol_ctrl_settings"));
-      Settings saved;
-      if (this->settings_pref_.load(&saved) && saved.version == SETTINGS_VERSION &&
-          saved.brightness >= MIN_BRIGHTNESS && saved.brightness <= 100 && saved.deep_sleep_timeout >= 0 &&
-          saved.max_volume >= 10.0f && saved.volume_step >= 0.5f && saved.display_timeout >= 0)
-      {
-        this->backlight_level_ = saved.brightness;
-        this->deep_sleep_timeout_ = saved.deep_sleep_timeout;
-        this->max_volume_ = std::min(saved.max_volume, this->max_volume_limit_);  // yaml stays the upper limit
-        this->volume_step_ = saved.volume_step;
-        this->display_timeout_ = saved.display_timeout;
+
+void VolCtrl::loop() {
+  uint32_t now = millis();
+  bool wifi_connected = wifi::global_wifi_component->is_connected();
+  // Wait for wifi to connect before proceeding
+  if (!wifi_connected) {
+      esphome::vol_ctrl::display::update_status_message(this->tft_, "Connecting to WiFi");
+      esphome::vol_ctrl::display::update_wifi_status(this->tft_, wifi_connected);
+      return;  // exit loop() to satisfy ESP watchdog timer
+  }
+
+  // WiFi is connected at this stage
+  // Loop as frequently as possible to keep the UI responsive
+  // Rotary encoder changes are read by esphome, see yaml lambda
+  const std::map<std::string, DeviceState>& device_states_const = network::get_device_states();
+  std::map<std::string, DeviceState>& device_states = const_cast<std::map<std::string, DeviceState>&>(device_states_const);  // get list of devices and its states
+
+  // 500ms after last encoder change, we can process the accumulated changes
+  for (auto &entry : device_states) {
+    DeviceState &state = entry.second;
+    float requested_vol = state.get_requested_volume();
+    float last_sent_vol = state.get_last_sent_volume();
+    if (requested_vol > 0.0f && now - this->last_volume_change_ >= 300 && !in_menu_) {  // there was some rotary change
+      // Only call volume_change if requested volume is different from last sent volume
+      if (fabs(requested_vol - last_sent_vol) > 1e-4) {
+        const std::string &ipv6 = entry.first;
+        // NON-BLOCKING: volume_change now sends to queue
+        volume_change(ipv6, requested_vol);
+        state.set_last_sent_volume(requested_vol);
       }
-      apply_brightness_();
-      this->last_interaction_ = millis();
+    }
+    else
+      break;
+  }
+  if (now - this->last_volume_change_ >= 500 && !in_menu_) {  // reset time to commit the volume
+    this->last_volume_change_ = now;
+  }
 
-      // Rotary encoder: both pins interrupt on every edge
-      this->pin_a_->setup();
-      this->pin_b_->setup();
-      this->encoder_.pin_a = this->pin_a_->to_isr();
-      this->encoder_.pin_b = this->pin_b_->to_isr();
-      this->encoder_.prev = (this->pin_a_->digital_read() ? 2 : 0) | (this->pin_b_->digital_read() ? 1 : 0);
-      this->pin_a_->attach_interrupt(EncoderStore::gpio_intr, &this->encoder_, gpio::INTERRUPT_ANY_EDGE);
-      this->pin_b_->attach_interrupt(EncoderStore::gpio_intr, &this->encoder_, gpio::INTERRUPT_ANY_EDGE);
+  // every 10 seconds, we check the device states and update the display if needed
+  // Give more time on the first check after WiFi connects
+  if (now - this->main_loop_counter > 10000) {
+    bool is_up_changed = false;
+    bool standby_countdown_changed = false;
+    bool volume_changed = false;
+    bool mute_changed = false;
+    this->main_loop_counter = now;
+    DeviceState* last_state = nullptr;
+    
+    // Trigger a refresh for all devices by sending a request to the network task
+    for (auto const& entry : device_states) {
+        const std::string& ipv6 = entry.first;
+        NetworkRequest request = {NetworkRequestType::GET_DEVICE_DATA, ipv6, 0.0f, false};
+        xQueueSend(this->network_queue_, &request, (TickType_t)0);
+    }
+    
+    // Process the most recently updated state for display purposes.
+    // The network task updates the state in the background. We just read it here.
+    if (!device_states.empty()) {
+      // For display, we'll just use the state of the first device.
+      DeviceState &state = device_states.begin()->second;
+      last_state = &state;
 
-      // Initialize network subsystem
-      network::init();
-      network::start();
-      if (this->wiim_enabled_)
-      {
-        wiim::init(this->wiim_ip_);
-        wiim::start();
+      // Check for changes against our last known state
+      if (state.volume != this->last_known_volume_) {
+        volume_changed = true;
+        this->last_known_volume_ = state.volume;
+      }
+      if (state.muted != this->last_known_mute_state_) {
+        mute_changed = true;
+        this->last_known_mute_state_ = state.muted;
+      }
+      if (state.standby_countdown != this->last_known_standby_countdown_) {
+        standby_countdown_changed = true;
+        this->last_known_standby_countdown_ = state.standby_countdown;
+      }
+      if (state.is_up != this->last_known_is_up_) {
+         is_up_changed = true;
+         this->last_known_is_up_ = state.is_up;
       }
     }
 
-    void VolCtrl::dump_config()
-    {
-      ESP_LOGCONFIG(TAG, "Volume Control:");
-      ESP_LOGCONFIG(TAG, "  Max volume: %.1f dB (limit %.1f dB), step %.1f dB", this->max_volume_,
-                    this->max_volume_limit_, this->volume_step_);
-      ESP_LOGCONFIG(TAG, "  Display timeout: %d s (0 = off)", this->display_timeout_);
-      LOG_PIN("  Encoder pin A: ", this->pin_a_);
-      LOG_PIN("  Encoder pin B: ", this->pin_b_);
-      ESP_LOGCONFIG(TAG, "  Brightness: %d%%", this->backlight_level_);
-      ESP_LOGCONFIG(TAG, "  Deep sleep timeout: %d s (0 = off)", this->deep_sleep_timeout_);
+    wiim_pro_.try_reconnect();   // this is fast if connected
+
+    if (!in_menu_) {
+      // Update changed values on display (every 5sec)
+      if (last_state != nullptr) {
+        if (standby_countdown_changed)
+          esphome::vol_ctrl::display::update_standby_time(this->tft_, last_state->standby_countdown);
+        if (volume_changed)
+          esphome::vol_ctrl::display::update_volume_display(this->tft_, last_state->volume);
+        if (mute_changed)
+          esphome::vol_ctrl::display::update_mute_status(this->tft_, last_state->muted, last_state->volume);
+      }
+      if (is_up_changed)
+        esphome::vol_ctrl::display::update_speaker_dots(this->tft_, device_states);
+      esphome::vol_ctrl::display::update_datetime(this->tft_, utils::get_datetime_string());
+      esphome::vol_ctrl::display::update_status_message(this->tft_, "Long-press for menu");
+      esphome::vol_ctrl::display::update_wifi_status(this->tft_, wifi_connected);
+      esphome::vol_ctrl::display::update_wiim_status(this->tft_, wiim_pro_.is_available());
     }
-
-    float VolCtrl::clamp_volume_(float volume) const
-    {
-      if (volume < 0.0f)
-        return 0.0f;
-      if (volume > this->max_volume_)
-        return this->max_volume_;
-      return volume;
-    }
-
-    DeviceState *VolCtrl::representative_state_()
-    {
-      auto &device_states = network::get_device_states();
-      for (auto &entry : device_states)
-      {
-        if (entry.second.is_up)
-          return &entry.second;
-      }
-      return device_states.empty() ? nullptr : &device_states.begin()->second;
-    }
-
-    VolCtrl::PollResult VolCtrl::apply_poll_updates_()
-    {
-      PollResult result;
-      std::vector<network::PollUpdate> updates;
-      if (!network::take_updates(updates))
-        return result;
-
-      result.received = true;
-      auto &device_states = network::get_device_states();
-      for (const auto &update : updates)
-      {
-        auto it = device_states.find(update.ipv6);
-        if (it == device_states.end())
-          continue;
-        DeviceState &state = it->second;
-        if (!state.known)
-        {
-          state.known = true;
-          result.is_up_changed = true;  // dot turns from orange to green/red
-        }
-        if (state.set_is_up(update.is_up))
-        {
-          result.is_up_changed = true;
-          ESP_LOGI(TAG, "Speaker %s is %s", update.ipv6.c_str(), update.is_up ? "reachable" : "unreachable");
-        }
-        if (!update.is_up)
-          continue; // keep the last known values instead of overwriting them with defaults
-        result.standby_changed |= state.set_standby_countdown(update.data.standby_countdown);
-        state.requested_volume = update.data.volume;
-        result.mute_changed |= state.set_mute(update.data.mute);
-        state.logo_brightness = update.data.logo_brightness;
-        state.auto_standby_time = update.data.auto_standby_time;
-        state.auto_standby_enabled = update.data.auto_standby_enabled;
-      }
-      resync_volumes_();
-      return result;
-    }
-
-    void VolCtrl::draw_status_(const PollResult &changed, bool force)
-    {
-      DeviceState *state = representative_state_();
-      if (force || changed.is_up_changed)
-        display::update_speaker_dots(this->tft_, network::get_device_states());
-      // The countdown is polled from the speaker every cycle; redraw it at least once a minute even if unchanged
-      const uint32_t now = millis();
-      if (state != nullptr && (force || changed.standby_changed || now - last_standby_draw_ >= 60000))
-      {
-        display::update_standby_time(this->tft_, state->standby_countdown);
-        last_standby_draw_ = now;
-      }
-      display::update_datetime(this->tft_, utils::get_datetime_string());
-      display::update_volume_display(this->tft_, state != nullptr ? state->requested_volume : -1.0f);
-      if (state != nullptr && state->muted)
-        display::update_mute_status(this->tft_, true, state->requested_volume);
-      else if (state != nullptr && (force || changed.mute_changed))
-        display::update_mute_status(this->tft_, false, state->requested_volume);
-      const bool wifi_connected = wifi::global_wifi_component->is_connected();
-      bool speakers_pending = false;
-      for (auto &entry : network::get_device_states())
-        speakers_pending |= !entry.second.known;
-
-      // Bottom line: what the device is busy with, then input / track from the WiiM, else the menu hint
-      std::string message = "Long-press for menu";
-      if (!wifi_connected)
-      {
-        message = "Connecting to WiFi";
-      }
-      else if (speakers_pending)
-      {
-        message = "Finding speakers";
-      }
-      std::string above, below;
-      if (this->wiim_enabled_ && wifi_connected && !speakers_pending)
-      {
-        wiim::Status wiim_status = wiim::get_status();
-        if (wiim_status.available && !wiim_status.input.empty())
-        {
-          message = wiim_status.input;
-          above = wiim_status.artist;
-          if (!wiim_status.album.empty())
-            above += above.empty() ? wiim_status.album : " / " + wiim_status.album;
-          below = wiim_status.title;
+    
+    // Check if all speakers are unavailable for deep sleep timeout
+    if (deep_sleep_timeout_ > 0) {  // Only check if deep sleep timeout is enabled
+      bool any_speaker_available = false;
+      
+      // Check only regular speakers (WiiM is irrelevant for deep sleep)
+      for (const auto &entry : device_states) {
+        if (entry.second.is_up) {
+          any_speaker_available = true;
+          break;
         }
       }
-      display::update_track_info(this->tft_, above, below);
-      display::update_status_message(this->tft_, message);
-
-      if (this->wiim_enabled_)
-        display::update_wiim_status(this->tft_, wiim_link_state_());
-      display::update_wifi_status(this->tft_, wifi_connected ? display::LinkState::UP : display::LinkState::PENDING);
-    }
-
-    display::LinkState VolCtrl::wiim_link_state_()
-    {
-      wiim::Status status = wiim::get_status();
-      if (!status.checked)
-        return display::LinkState::PENDING;
-      return status.available ? display::LinkState::UP : display::LinkState::DOWN;
-    }
-
-    // Everything runs in ESPHome's cooperative loop, so loop() must return quickly or the watchdog resets the chip.
-    // Network I/O is done by the worker task in network.cpp; this only consumes its results.
-    // Encoder and button events arrive via the callbacks below (see yaml).
-    void VolCtrl::loop()
-    {
-      uint32_t now = millis();
-
-      // Clicks counted by the encoder interrupt handler since the last loop
-      int32_t detents;
-      {
-        InterruptLock lock;
-        detents = this->encoder_.detents;
-        this->encoder_.detents = 0;
-      }
-      if (detents != 0)
-        process_encoder_change(detents);
-
-      // Act on a long press as soon as the button has been held long enough, not only when it is released:
-      // open the menu, or close it again when it is already open
-      if (button_down_ && !long_press_handled_ && now - button_press_time_ > LONG_PRESS_MS)
-      {
-        long_press_handled_ = true;
-        ESP_LOGI(TAG, "Long press detected");
-        if (!editor_.active)  // an editor is saved by the release, see button_released()
-        {
-          if (in_menu_)
-            exit_menu();
-          else
-            enter_menu();
+      
+      if (any_speaker_available) {
+        // Reset the unavailable timer if any speaker is available
+        speakers_unavailable_since_ = 0;
+      } else {
+        // All speakers are unavailable
+        if (speakers_unavailable_since_ == 0) {
+          // First time all speakers became unavailable
+          speakers_unavailable_since_ = now;
+          ESP_LOGI(TAG, "All speakers unavailable, starting deep sleep countdown (timeout: %d seconds)", deep_sleep_timeout_);
+        } else {
+          // Check if we've been without speakers for the timeout duration
+          uint32_t unavailable_duration = (now - speakers_unavailable_since_) / 1000; // Convert to seconds
+          if (unavailable_duration >= deep_sleep_timeout_) {
+            ESP_LOGI(TAG, "All speakers unavailable for %d seconds, entering deep sleep", unavailable_duration);
+            deep_sleep();
+          } else {
+            ESP_LOGD(TAG, "All speakers unavailable for %d seconds (timeout: %d seconds)", unavailable_duration, deep_sleep_timeout_);
+          }
         }
       }
 
@@ -389,24 +345,213 @@ namespace esphome
       pending_changes_ = PollResult{};
       last_draw_ = millis();
     }
+  }
+  
+}  // end of loop()
 
-    // Clamp and queue a volume for one speaker; never blocks.
-    bool VolCtrl::apply_volume_(const std::string &ipv6, DeviceState &state, float volume)
-    {
-      if (!state.is_up)
-        return false;
-      volume = clamp_volume_(volume);
-      network::request_volume(ipv6, volume);
-      state.set_requested_volume(volume); // the next poll confirms (or corrects) it
-      return true;
+
+
+void VolCtrl::network_task() {
+  NetworkRequest request;
+  for (;;) {
+    // Wait for a request from the main loop
+    if (xQueueReceive(this->network_queue_, &request, portMAX_DELAY)) {
+      ESP_LOGD(TAG, "Network task received request for %s", request.ipv6.c_str());
+      switch (request.type) {
+        case NetworkRequestType::GET_DEVICE_DATA: {
+          network::DeviceVolStdbyData current_device_data;
+          bool is_up = network::get_device_data(request.ipv6, current_device_data);
+          
+          // This part still accesses shared state. For a more robust solution,
+          // you could use another queue to send results back to the main thread.
+          // For now, we rely on the fact that DeviceState setters are simple.
+          auto &device_states = const_cast<std::map<std::string, DeviceState>&>(network::get_device_states());
+          if (device_states.count(request.ipv6)) {
+            DeviceState &state = device_states.at(request.ipv6);
+            state.set_is_up(is_up);
+            state.set_standby_countdown(current_device_data.standby_countdown);
+            state.set_volume(current_device_data.volume);
+            state.set_mute(current_device_data.mute);
+          }
+          break;
+        }
+        case NetworkRequestType::SET_VOLUME:
+          network::set_device_volume(request.ipv6, request.volume);
+          break;
+        case NetworkRequestType::SET_MUTE:
+          network::set_device_mute(request.ipv6, request.mute);
+          break;
+      }
     }
+  }
+}
 
-    void VolCtrl::button_pressed()
-    {
-      note_interaction_();
-      button_press_time_ = millis();
-      button_down_ = true;
-      long_press_handled_ = false;
+
+void VolCtrl::update_whole_screen() {
+  std::map<std::string, DeviceState>& device_states = const_cast<std::map<std::string, DeviceState>&>(network::get_device_states());  // get list of devices and its states
+  DeviceState* last_state = nullptr;
+
+  for (auto &entry : device_states) {  // for every known device
+    const std::string &ipv6 = entry.first;
+    DeviceState &state = entry.second;
+    network::DeviceVolStdbyData current_device_data;
+    bool is_up = network::get_device_data(ipv6, current_device_data);
+    state.set_is_up(is_up);
+    state.set_standby_countdown(current_device_data.standby_countdown);
+    state.set_volume(current_device_data.volume);
+    state.set_mute(current_device_data.mute);
+    last_state = &state; // keep reference to the last processed state
+    
+    // Yield after processing each device to prevent watchdog timeout
+    esphome::yield();
+  }
+  this->tft_->fillScreen(TFT_BLACK);
+  esphome::vol_ctrl::display::update_standby_time(this->tft_, last_state->standby_countdown);
+  esphome::vol_ctrl::display::update_speaker_dots(this->tft_, device_states);
+  esphome::vol_ctrl::display::update_datetime(this->tft_, utils::get_datetime_string());
+  esphome::vol_ctrl::display::update_volume_display(this->tft_, last_state->volume);
+  esphome::vol_ctrl::display::update_mute_status(this->tft_, last_state->muted, last_state->volume);
+  esphome::vol_ctrl::display::update_status_message(this->tft_, "Long-press for menu");
+  esphome::vol_ctrl::display::update_wifi_status(this->tft_, wifi::global_wifi_component->is_connected());
+  esphome::vol_ctrl::display::update_wiim_status(this->tft_, wiim_pro_.is_available());
+}
+
+// Handle volume change based on encoder ticks. It can be positive or negative.
+// If in menu mode, it will navigate the menu instead.
+// If volume is not initialized yet, it will do nothing.
+void VolCtrl::volume_change(const std::string &ipv6, float requested_volume) {
+  // Reset deep sleep timer on user interaction
+  speakers_unavailable_since_ = 0;
+  
+  // If we're in menu mode, use this for menu navigation
+  if (in_menu_) {
+    ESP_LOGI(TAG, "Menu navigation - down");  // TODO this has to be UP also
+    menu_down();
+    return;
+  }
+  
+  if (requested_volume < 0.0) {  // volume is not initialized yet
+    return;
+  }
+// TODO make constant setting for maximum volume
+  if (requested_volume > 120.0) {  // volume is over limit
+    return;
+  }
+  // network::set_device_volume(ipv6, requested_volume); // OLD BLOCKING CALL
+  // Post request to the network task instead
+  NetworkRequest request = {NetworkRequestType::SET_VOLUME, ipv6, requested_volume, false};
+  xQueueSend(this->network_queue_, &request, (TickType_t)0);
+
+  // Yield control after network operation to prevent watchdog timeout
+  esphome::yield();
+}
+
+void VolCtrl::button_pressed() {
+  // Reset deep sleep timer on user interaction
+  speakers_unavailable_since_ = 0;
+  button_press_time_ = millis();
+}
+
+void VolCtrl::button_released() {
+  // If in brightness adjustment mode, exit it
+  if (adjusting_brightness_) {
+    exit_brightness_adjustment();
+    return;
+  }
+  
+  uint32_t press_duration = millis() - button_press_time_;
+  if (press_duration > 300) {  // long press threshold
+    ESP_LOGI(TAG, "Long press detected (%ums)", press_duration);
+    enter_menu();
+  } else {
+    toggle_mute();
+  }
+}
+
+void VolCtrl::toggle_mute() {
+  // If we're in menu mode, use this as a select button
+  if (in_menu_) {
+    ESP_LOGI(TAG, "Button pressed in menu - selecting item");
+    menu_select();
+    return;
+  }
+  
+  ESP_LOGI(TAG, "Toggling mute state");
+  // Determine the current mute state from one of the speakers
+  auto &device_states = const_cast<std::map<std::string, DeviceState>&>(network::get_device_states());
+  
+  // First, determine what the new state should be
+  bool should_mute = false;
+  for (auto &entry : device_states) {
+    DeviceState &state = entry.second;
+    if (!state.muted) {  // If any device is not muted, we should mute all
+      should_mute = true;
+      break;
+    }
+  }
+  set_mute(should_mute);
+}
+
+void VolCtrl::mute() {
+  set_mute(true);
+}
+
+void VolCtrl::unmute() {
+  set_mute(false);
+}
+
+void VolCtrl::set_mute(bool new_mute) {
+  ESP_LOGI(TAG, "Muting all speakers %d", new_mute);
+  std::map<std::string, DeviceState>& device_states = const_cast<std::map<std::string, DeviceState>&>(network::get_device_states());
+  
+  // Update local state immediately and send requests to network task
+  for (auto &entry : device_states) {
+    // network::set_device_mute(entry.first, new_mute); // OLD BLOCKING CALL
+    NetworkRequest request = {NetworkRequestType::SET_MUTE, entry.first, 0.0f, new_mute};
+    xQueueSend(this->network_queue_, &request, (TickType_t)0);
+
+    DeviceState &state = entry.second;
+    state.set_mute(new_mute);
+    esphome::vol_ctrl::display::update_mute_status(this->tft_, new_mute, state.get_volume());
+    esphome::yield();
+  }
+}
+
+
+void VolCtrl::enter_menu() {
+  uint32_t now = millis();
+  
+  if (!in_menu_) {
+    ESP_LOGI(TAG, "Entering menu");
+    in_menu_ = true;
+    menu_level_ = 0;
+    menu_position_ = 0;
+    menu_items_count_ = 7; // Number of items in main menu
+    
+    // Draw the menu
+    display::draw_menu_screen(this->tft_, menu_level_, menu_position_, menu_items_count_);
+  }
+}
+
+void VolCtrl::exit_menu() {
+  if (in_menu_) {
+    ESP_LOGI(TAG, "Exiting menu");
+    in_menu_ = false;
+    menu_level_ = 0;
+    menu_position_ = 0;
+    adjusting_brightness_ = false;  // Reset brightness adjustment mode
+    
+    // Force a full redraw when exiting menu
+    update_whole_screen();
+  }
+}
+
+void VolCtrl::menu_up() {
+  if (in_menu_) {
+    int prev_position = menu_position_;
+    menu_position_--;
+    if (menu_position_ < 0) {
+      menu_position_ = menu_items_count_ - 1;
     }
 
     void VolCtrl::button_released()
@@ -516,103 +661,234 @@ namespace esphome
       float result = -1.0f;
       for (auto &entry : network::get_device_states())
       {
-        const DeviceState &state = entry.second;
-        if (!state.is_up || state.requested_volume < 0.0f)
-          continue;
-        if (result < 0.0f || state.requested_volume < result)
-          result = state.requested_volume;
-      }
-      return result;
-    }
+        ESP_LOGI(TAG, "Selected menu item %d", menu_position_);
 
-    // Called after every poll: if the reachable speakers disagree (one missed a command, or came back from
-    // standby with its own level) and nothing was requested recently, push the lowest level to all.
-    void VolCtrl::resync_volumes_()
-    {
-      if (millis() - last_volume_request_ < 4000)
-        return;
-      float low = group_volume_();
-      if (low < 0.0f)
-        return;
-      for (auto &entry : network::get_device_states())
-      {
-        DeviceState &state = entry.second;
-        if (state.is_up && state.requested_volume >= 0.0f && fabs(state.requested_volume - low) > 0.05f)
+        switch (menu_level_)
         {
-          ESP_LOGW(TAG, "Speakers out of sync, setting %s to %.1f", entry.first.c_str(), low);
-          last_volume_request_ = millis();
-          apply_volume_(entry.first, state, low);
+        case 0: // Main menu
+          if (menu_position_ == 0)
+          {
+            // Exit menu
+            exit_menu();
+            return;
+          }
+          else if (menu_position_ == 1)
+          {
+            // Show devices
+            // TODO: Implement device listing screen
+          }
+          else if (menu_position_ == 2)
+          {
+            // Show settings
+            // TODO: Implement settings screen
+          }
+          else if (menu_position_ == 3)
+          {
+            // Parametric EQ submenu
+            menu_level_ = 1; // Enter EQ submenu
+            menu_position_ = 0;
+            menu_items_count_ = 4;
+          }
+          else if (menu_position_ == 4)
+          {
+            // Discover devices
+            // This needs to trigger a new network discovery
+            // TODO: Implement discovery trigger
+          }
+          else if (menu_position_ == 5)
+          {
+            // Speaker parameters submenu
+            menu_level_ = 1; // Enter speaker parameters submenu
+            menu_position_ = 0;
+            menu_items_count_ = 6;
+          }
+          else if (menu_position_ == 6)
+          {
+            // Volume settings submenu
+            menu_level_ = 1; // Enter volume settings submenu
+            menu_position_ = 0;
+            menu_items_count_ = 7;
+            // TODO: Implement volume settings submenu
+          }
+          break;
+
+        case 1: // EQ submenu
+          if (menu_position_ == 0)
+          {
+            // Back to main menu
+            menu_level_ = 0;
+            menu_position_ = 0;
+            menu_items_count_ = 7;
+          }
+          // TODO: Implement other EQ submenu items
+          break;
+
+        case 2: // Speaker parameters submenu
+          if (menu_position_ == 0)
+          {
+            // Back to main menu
+            menu_level_ = 0;
+            menu_position_ = 0;
+            menu_items_count_ = 7;
+          }
+          // TODO: Implement other speaker parameters submenu items
+          break;
+
+        case 3: // Volume settings submenu
+          if (menu_position_ == 0)
+          {
+            // Back to main menu
+            menu_level_ = 0;
+            menu_position_ = 0;
+            menu_items_count_ = 7;
+          }
+          // TODO: Implement other volume settings submenu items
+          break;
         }
-      }
+        // TODO: Implement other speaker parameters submenu items
+        break;
+        
+      case 3:  // Volume settings submenu
+        if (menu_position_ == 0) {
+          // Back to main menu
+          menu_level_ = 0;
+          menu_position_ = 0;
+          menu_items_count_ = 7;
+        } else if (menu_position_ == 1) {
+          // Volume step adjustment
+          // TODO: Implement volume step adjustment
+        } else if (menu_position_ == 2) {
+          // Backlight intensity adjustment
+          ESP_LOGI(TAG, "Entering brightness adjustment mode");
+          adjusting_brightness_ = true;
+          esphome::vol_ctrl::display::draw_brightness_adjustment_screen(this->tft_, backlight_level_);
+          return; // Don't redraw menu
+        } else if (menu_position_ == 3) {
+          // Display timeout adjustment
+          // TODO: Implement display timeout adjustment
+        } else if (menu_position_ == 4) {
+          // Deep sleep timeout adjustment
+          ESP_LOGI(TAG, "Entering deep sleep timeout adjustment mode");
+          // TODO: Implement deep sleep timeout adjustment screen similar to brightness
+          // For now, cycle through common timeout values: 5min, 10min, 15min, 30min, disabled
+          static const int timeout_values[] = {300, 600, 900, 1800, 0}; // seconds (0 = disabled)
+          static const int num_timeouts = sizeof(timeout_values) / sizeof(timeout_values[0]);
+          
+          // Find current timeout index
+          int current_index = 0;
+          for (int i = 0; i < num_timeouts; i++) {
+            if (timeout_values[i] == deep_sleep_timeout_) {
+              current_index = i;
+              break;
+            }
+          }
+          
+          // Move to next timeout value
+          current_index = (current_index + 1) % num_timeouts;
+          deep_sleep_timeout_ = timeout_values[current_index];
+          
+          // Log the change
+          if (deep_sleep_timeout_ == 0) {
+            ESP_LOGI(TAG, "Deep sleep timeout disabled");
+          } else {
+            ESP_LOGI(TAG, "Deep sleep timeout set to %d minutes", deep_sleep_timeout_ / 60);
+          }
+          
+          // Reset the unavailable timer since we changed the setting
+          speakers_unavailable_since_ = 0;
+        }
+        break;
     }
+    ESP_LOGI("vol_ctrl", "Menu: level=%d, position=%d, items=%d", menu_level_, menu_position_, menu_items_count_);
+    // Redraw the menu screen
+    esphome::vol_ctrl::display::draw_menu_screen(this->tft_, menu_level_, menu_position_, menu_items_count_);
+  }
+}
 
-    // This function is only called from Home Assistant service
-    void VolCtrl::set_volume_from_hass(float level)
-    {
-      if (in_menu_)
-        return; // the menu owns the screen and the knob
-      note_interaction_();
-      ESP_LOGI(TAG, "Setting volume from Home Assistant to %.1f", level);
-      if (!(level >= 0.0f)) // also rejects NaN
-        return;
+// This function is only called from Home Assistant service
+void VolCtrl::set_volume_from_hass(float level) {
+  // Ignore volume setting when in menu
+  
+  ESP_LOGI(TAG, "Setting volume from Home Assistant to %.1f", level);
+  
+  // Cap volume level to valid range
+  if (level < 0.0f || level > 120.0f)  // TODO use configurable constant
+    return;
 
-      level = clamp_volume_(level);
-      last_volume_request_ = millis();
-      bool first = true;
-      for (auto &entry : network::get_device_states())
-      {
-        if (apply_volume_(entry.first, entry.second, level) && first)
-        {
-          display::update_volume_display(this->tft_, level, true);
-          first = false;
-        }
-      }
+  std::map<std::string, DeviceState>& device_states = const_cast<std::map<std::string, DeviceState>&>(network::get_device_states());
+  for (auto &entry : device_states) {
+    DeviceState &state = entry.second;
+    const std::string &ipv6 = entry.first;
+    volume_change(ipv6, level);
+    state.set_last_sent_volume(level);
+  }
+}
+
+// Diff can be negative, see yaml lambda
+void VolCtrl::volume_change_from_hass(float diff) {
+  std::map<std::string, DeviceState>& device_states = const_cast<std::map<std::string, DeviceState>&>(network::get_device_states());
+  for (auto &entry : device_states) {
+    DeviceState &state = entry.second;
+    const std::string &ipv6 = entry.first;
+    float current_volume = state.get_volume();
+    if (current_volume < 0.0f) {
+      return;
     }
+    set_volume_from_hass(current_volume + (diff /2 ));
+  }
 
-    // Diff can be negative, see yaml lambda
-    void VolCtrl::volume_change_from_hass(float diff)
-    {
-      if (in_menu_)
-        return;
-      step_volume_(diff);
+}
+
+void VolCtrl::process_encoder_change(int diff) {
+  // Reset deep sleep timer on user interaction
+  speakers_unavailable_since_ = 0;
+  
+  // Handle brightness adjustment mode
+  if (adjusting_brightness_) {
+    // Adjust brightness in steps of 5%
+    int new_brightness = backlight_level_ + (diff * 5);
+    
+    // Clamp to valid range
+    if (new_brightness < 0) new_brightness = 0;
+    if (new_brightness > 100) new_brightness = 100;
+    
+    // Only update if brightness actually changed
+    if (new_brightness != backlight_level_) {
+      set_display_brightness(new_brightness);
+      esphome::vol_ctrl::display::draw_brightness_adjustment_screen(this->tft_, backlight_level_);
     }
+    return;
+  }
+  
+  // Ignore encoder input when in menu
+  if (in_menu_) {
+    // Use encoder for menu navigation
+    if (diff > 0) {
+      menu_down();  // Move menu selection down
+    } else if (diff < 0) {
+      menu_up();    // Move menu selection up
+    }
+    return;
+  }
 
-    void VolCtrl::process_encoder_change(int diff)
-    {
-      if (diff == 0)
-        return;
-      note_interaction_();
-
-      if (page_.active)
-      {
-        const int max_first = std::max(0, static_cast<int>(page_.lines.size()) - display::text_page_rows());
-        const int first = std::min(std::max(page_.first + diff, 0), max_first);
-        if (first != page_.first)
-        {
-          page_.first = first;
-          redraw_page_();
-        }
-        return;
-      }
-
-      if (editor_.active)
-      {
-        int value = std::min(std::max(editor_.value + diff * editor_.step, editor_.min), editor_.max);
-        if (value != editor_.value)
-        {
-          editor_.value = value;
-          if (editor_.apply)
-            editor_.apply(value);
-          display::draw_editor_screen(this->tft_, editor_.title, editor_.format(value),
-                                      static_cast<float>(value - editor_.min) / (editor_.max - editor_.min));
-        }
-        return;
-      }
-
-      if (in_menu_)
-      {
-        menu_move_(diff);
-        return;
+  if (fabs(diff) > 10) {
+    return;  // Ignore very large changes
+  }
+  this->last_volume_change_ = millis();  // volume will commit since last encoder change
+  this->main_loop_counter = millis();  // reset device check timer to force update display
+  // Not in menu mode, so process volume change
+  std::map<std::string, DeviceState>& device_states = const_cast<std::map<std::string, DeviceState>&>(network::get_device_states());  // get list of devices and its states
+  for (auto &entry : device_states) { 
+    DeviceState &state = entry.second;
+    float requested_vol = state.get_requested_volume();
+    if (requested_vol < 0.0f) {
+      float vol = state.get_volume();
+      if (vol < 0.0f) {
+        ESP_LOGI(TAG, "Requested volume is not set and volume not yet read from device, ignoring encoder change");
+        return;  // No valid volume to change
+      } else {
+        // Since volume from device was confirmed yellow, this is the first rotation diff
+        requested_vol = vol;
       }
 
       ESP_LOGD(TAG, "Encoder diff %d", diff);
@@ -662,6 +938,150 @@ namespace esphome
         apply_brightness_();
       }
     }
+    requested_vol = requested_vol + diff;  // TODO handle sensitivity well here
+    state.set_requested_volume(requested_vol);
+    esphome::vol_ctrl::display::update_volume_display(this->tft_, requested_vol, true);
+  }
+}
 
-  } // namespace vol_ctrl
-} // namespace esphome
+void VolCtrl::pause() {
+  ESP_LOGI(TAG, "Pause/Play toggle command received");
+  
+  // Check if WiiM features are available before attempting command
+  if (wiim_pro_.is_available()) {
+    if (wiim_pro_.pause_play_toggle()) {
+      ESP_LOGI(TAG, "Successfully sent pause/play toggle command to WiiM device");
+    } else {
+      ESP_LOGW(TAG, "Failed to send pause/play toggle command to WiiM device");
+    }
+  } else {
+    ESP_LOGD(TAG, "WiiM device not available - pause/play feature disabled");
+    ESP_LOGI(TAG, "Pause/Play toggle command - not implemented for KH speakers");
+    // KH speakers don't have pause functionality as they are monitors
+    // This could be extended to control connected audio sources if needed
+  }
+}
+
+void VolCtrl::next() {
+  ESP_LOGI(TAG, "Next command received");
+  
+  // Check if WiiM features are available before attempting command
+  if (wiim_pro_.is_available()) {
+    if (wiim_pro_.next()) {
+      ESP_LOGI(TAG, "Successfully sent next command to WiiM device");
+    } else {
+      ESP_LOGW(TAG, "Failed to send next command to WiiM device");
+    }
+  } else {
+    ESP_LOGD(TAG, "WiiM device not available - next track feature disabled");
+    ESP_LOGI(TAG, "Next command - not implemented for KH speakers");
+    // KH speakers don't have track control functionality as they are monitors
+    // This could be extended to control connected audio sources if needed
+  }
+}
+
+void VolCtrl::cycle_input() {
+  ESP_LOGI(TAG, "Cycle input command received");
+  
+  // Check if WiiM features are available before attempting command
+  if (wiim_pro_.is_available()) {
+    if (wiim_pro_.cycle_input()) {
+      ESP_LOGI(TAG, "Successfully cycled input on WiiM device");
+    } else {
+      ESP_LOGW(TAG, "Failed to cycle input on WiiM device");
+    }
+  } else {
+    ESP_LOGD(TAG, "WiiM device not available - input cycling feature disabled");
+  }
+}
+
+void VolCtrl::set_input(const std::string &input) {
+  ESP_LOGI(TAG, "Set input command received: %s", input.c_str());
+  
+  // Check if WiiM features are available before attempting command
+  if (wiim_pro_.is_available()) {
+    if (wiim_pro_.set_input(input)) {
+      ESP_LOGI(TAG, "Successfully set input to '%s' on WiiM device", input.c_str());
+    } else {
+      ESP_LOGW(TAG, "Failed to set input to '%s' on WiiM device", input.c_str());
+    }
+  } else {
+    ESP_LOGD(TAG, "WiiM device not available - input setting feature disabled");
+  }
+}
+
+std::string VolCtrl::get_current_input() {
+  // Check if WiiM features are available before attempting to get input
+  if (wiim_pro_.is_available()) {
+    return wiim_pro_.get_current_input();
+  } else {
+    ESP_LOGD(TAG, "WiiM device not available - returning default input");
+    return "Network"; // Default fallback when device is offline
+  }
+}
+
+void VolCtrl::set_display_brightness(int brightness) {
+  // Clamp brightness to valid range (0-100%)
+  if (brightness < 0) brightness = 0;
+  if (brightness > 100) brightness = 100;
+  
+  backlight_level_ = brightness;
+  
+  // If backlight pin is configured, update the PWM output
+  if (this->backlight_pin_ != nullptr) {
+    // Convert percentage (0-100) to float range (0.0-1.0)
+    float level = brightness / 100.0f;
+    
+    ESP_LOGI(TAG, "Setting display brightness to %d%% (%.2f)", brightness, level);
+    this->backlight_pin_->set_level(level);
+  } else {
+    ESP_LOGW(TAG, "Backlight pin not configured, cannot set brightness");
+  }
+}
+
+void VolCtrl::exit_brightness_adjustment() {
+  if (adjusting_brightness_) {
+    ESP_LOGI(TAG, "Exiting brightness adjustment mode");
+    adjusting_brightness_ = false;
+    
+    // Return to volume settings submenu
+    menu_level_ = 1;
+    menu_position_ = 0;
+    menu_items_count_ = 7;
+    
+    // Redraw the menu screen
+    esphome::vol_ctrl::display::draw_menu_screen(this->tft_, menu_level_, menu_position_, menu_items_count_);
+  }
+}
+
+void VolCtrl::deep_sleep() {
+  ESP_LOGI(TAG, "Entering deep sleep mode...");
+  
+  // Turn off the display
+  if (this->tft_ != nullptr) {
+    this->tft_->fillScreen(TFT_BLACK);
+    this->tft_->writecommand(0x10); // Enter sleep mode
+  }
+  
+  // Turn off backlight
+  if (this->backlight_pin_ != nullptr) {
+    ESP_LOGI(TAG, "Turning off backlight");
+    this->backlight_pin_->set_level(0.0);
+  }
+  
+  // Configure wake-up source - wake up on GPIO25 (encoder button) press
+  // GPIO25 is the encoder button according to the YAML config
+  esp_sleep_enable_ext0_wakeup(GPIO_NUM_25, 0); // Wake on LOW (button pressed, considering pullup)
+  
+  ESP_LOGI(TAG, "Configured wake-up on GPIO25 (encoder button)");
+  ESP_LOGI(TAG, "Starting deep sleep now...");
+  
+  // Small delay to ensure log message is sent
+  esphome::delay(100);
+  
+  // Enter deep sleep
+  esp_deep_sleep_start();
+}
+
+}  // namespace vol_ctrl
+}  // namespace esphome

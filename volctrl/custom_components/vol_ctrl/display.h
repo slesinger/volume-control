@@ -21,8 +21,8 @@ namespace esphome
             void draw_forbidden_icon(TFT_eSPI *tft, int x, int y);
 
             // Partial section updates for efficient rendering
-            void update_wifi_status(TFT_eSPI *tft, LinkState state);
-            void update_wiim_status(TFT_eSPI *tft, LinkState state);
+            void update_wifi_status(TFT_eSPI *tft, bool connected);
+            void update_wiim_status(TFT_eSPI *tft, bool available);
             void update_speaker_dots(TFT_eSPI *tft, const std::map<std::string, DeviceState> &states);
             void update_datetime(TFT_eSPI *tft, const std::string &datetime);
             void update_standby_time(TFT_eSPI *tft, int standby_countdown);
@@ -33,23 +33,10 @@ namespace esphome
             void update_track_info(TFT_eSPI *tft, const std::string &above, const std::string &below);
             void update_status_message(TFT_eSPI *tft, const std::string &status);
 
-            // Menu drawing
-            struct MenuRow
-            {
-                std::string label;
-                std::string value; // right-aligned
-                bool submenu = false;
-            };
-            int menu_visible_rows();
-            void draw_menu(TFT_eSPI *tft, const std::string &title, const std::vector<MenuRow> &rows, int selected,
-                           int first_visible);
-            void draw_menu_row(TFT_eSPI *tft, const MenuRow &row, int visible_index, bool selected);
-            // Read-only scrollable text page (font 2). A line starting with '#' is a heading.
-            int text_page_rows();
-            void draw_text_page(TFT_eSPI *tft, const std::string &title, const std::vector<std::string> &lines,
-                                int first);
-            // Full-screen value editor: big value and a bar (fraction 0..1)
-            void draw_editor_screen(TFT_eSPI *tft, const std::string &title, const std::string &value, float fraction);
+            // Menu drawing functions
+            void draw_menu_item_highlight(TFT_eSPI *tft, int position, int prev_position);
+            void draw_menu_screen(TFT_eSPI *tft, int menu_level, int menu_position, int menu_items_count);
+            void draw_brightness_adjustment_screen(TFT_eSPI *tft, int brightness);
 
             // Get screen regions for partial updates
             struct ScreenRegion

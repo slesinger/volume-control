@@ -1,3 +1,21 @@
+#include <string>
+// Helper to format date/time string
+std::string get_datetime_string() {
+  time_t now = ::time(nullptr);
+  if (now != 0) {
+    struct tm timeinfo;
+    localtime_r(&now, &timeinfo);
+    char buf[32];
+    static const char *months[] = {"Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"};
+    int month = timeinfo.tm_mon;
+    snprintf(buf, sizeof(buf), "%02d:%02d %s %02d", 
+             timeinfo.tm_hour, timeinfo.tm_min,
+             (month >= 0 && month < 12) ? months[month] : "---",
+             timeinfo.tm_mday);
+    return std::string(buf);
+  }
+  return "--:-- --- --";
+}
 #include "utils.h"
 #include "esphome/core/log.h"
 #include <cstring>
