@@ -2,6 +2,7 @@
 #include "display.h"
 #include "art.h"
 #include "background.h"
+#include "volume_font.h"
 #include "device_state.h"
 #include <TFT_eSPI.h>
 #include <algorithm>
@@ -226,10 +227,10 @@ void update_volume_display(TFT_eSPI *tft, float volume, bool user_adjusting) {
 
   ScreenRegion band = digits_band();
   fill_bg(tft, band.x, band.y, band.w, band.h);
-  tft->setTextFont(8);
+  tft->setFreeFont(&OrbitronDigits);  // digits are 66 px tall and sit on the baseline
   tft->setTextSize(1);
   tft->setTextPadding(0);
-  tft->setTextDatum(MC_DATUM);
+  tft->setTextDatum(C_BASELINE);
   char buf[8];
   if (value < 0)
     snprintf(buf, sizeof(buf), "--");
@@ -237,7 +238,8 @@ void update_volume_display(TFT_eSPI *tft, float volume, bool user_adjusting) {
     snprintf(buf, sizeof(buf), "%02d", value);
   // Blue for user-initiated changes as per requirements
   tft->setTextColor(user_adjusting ? TFT_BLUE : TFT_YELLOW);
-  tft->drawString(buf, tft->width() / 2, VOLUME_CENTER_Y);
+  tft->drawString(buf, tft->width() / 2, VOLUME_CENTER_Y + 33);
+  tft->setTextFont(4);  // back to a bitmap font for everything else
 }
 
 void update_mute_status(TFT_eSPI *tft, bool muted, float volume) {

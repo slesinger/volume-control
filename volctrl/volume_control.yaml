@@ -22,6 +22,7 @@ esphome:
       - -DLOAD_FONT2=1 # Load smooth Font2 - smaller font for header
       - -DLOAD_FONT4=1 # Load smooth Font4 - main UI font
       - -DLOAD_FONT8=1 # Load smooth Font8 - volume display
+      - -DLOAD_GFXFF=1 # Free fonts: the Orbitron volume digits (volume_font.h)
       - -DSPI_FREQUENCY=40000000
       - -DDISABLE_ALL_LIBRARY_WARNINGS=1  # Disable the touch CS warning
       - -Isrc # Base source directory
