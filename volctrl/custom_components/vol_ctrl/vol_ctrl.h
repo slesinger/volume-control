@@ -30,12 +30,16 @@ class VolCtrl : public Component, public spi::SPIDevice<spi::BIT_ORDER_MSB_FIRST
   void button_pressed();
   void button_released();
   void toggle_mute();
+  void mute();
+  void unmute();
+  void set_mute(bool mute);  // all reachable speakers
   void enter_menu();
   void exit_menu();
 
   // Configuration
   void set_backlight_pin(output::FloatOutput *backlight_pin) { backlight_pin_ = backlight_pin; }
   void set_max_volume(float max_volume) { max_volume_ = max_volume; }
+  float get_max_volume() const { return max_volume_; }
 
   // Menu navigation methods
   void menu_up();
@@ -45,6 +49,10 @@ class VolCtrl : public Component, public spi::SPIDevice<spi::BIT_ORDER_MSB_FIRST
   // Home Assistant entry points. Ignored while the menu is open.
   void set_volume_from_hass(float level);
   void volume_change_from_hass(float diff);
+
+  // State for Home Assistant entities (representative speaker). Volume is -1 while unknown.
+  float get_volume();
+  bool is_muted();
 
   // Encoder entry point: diff is the number of detents turned (negative = counter-clockwise).
   void process_encoder_change(int diff);

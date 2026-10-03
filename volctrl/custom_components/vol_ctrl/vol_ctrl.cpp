@@ -202,17 +202,23 @@ namespace esphome
       }
 
       // One target for all speakers: mute unless every reachable speaker is already muted
-      auto &device_states = network::get_device_states();
       bool any_unmuted = false;
-      for (auto &entry : device_states)
+      for (auto &entry : network::get_device_states())
       {
         if (entry.second.is_up && !entry.second.muted)
           any_unmuted = true;
       }
-      const bool target = any_unmuted;
+      set_mute(any_unmuted);
+    }
+
+    void VolCtrl::mute() { set_mute(true); }
+    void VolCtrl::unmute() { set_mute(false); }
+
+    void VolCtrl::set_mute(bool target)
+    {
       ESP_LOGI(TAG, "Setting mute to %s on all speakers", target ? "on" : "off");
 
-      for (auto &entry : device_states)
+      for (auto &entry : network::get_device_states())
       {
         if (!entry.second.is_up)
           continue;
@@ -221,8 +227,20 @@ namespace esphome
       }
 
       DeviceState *state = representative_state_();
-      if (state != nullptr)
+      if (state != nullptr && !in_menu_)
         display::update_mute_status(this->tft_, state->muted, state->requested_volume);
+    }
+
+    float VolCtrl::get_volume()
+    {
+      DeviceState *state = representative_state_();
+      return state != nullptr ? state->requested_volume : -1.0f;
+    }
+
+    bool VolCtrl::is_muted()
+    {
+      DeviceState *state = representative_state_();
+      return state != nullptr && state->muted;
     }
 
     void VolCtrl::enter_menu()

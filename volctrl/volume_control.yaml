@@ -1,3 +1,8 @@
+substitutions:
+  # Volume range (dB) that HA sees: the number slider and the media_player 0..1 volume map onto 0..ha_volume_range.
+  # Deliberately lower than the speakers' 120 dB maximum so a stray slider drag cannot go loud.
+  ha_volume_range: "60"
+
 esphome:
   name: volume-control
   platformio_options:
@@ -26,6 +31,11 @@ esphome:
       - -Isrc/esphome/components/psram
       - -Isrc/esphome/components/wifi
       - -Isrc/esphome/components/spi              # The MOST IMPORTANT one
+
+globals:
+  - id: updating_from_sensor
+    type: bool
+    initial_value: 'false'
 
 esp32:
   board: lolin32
@@ -63,13 +73,25 @@ api:
       then:
         - lambda: 'id(my_vol_ctrl).toggle_mute();'
     
+    - service: mute
+      then:
+        - lambda: 'id(my_vol_ctrl).mute();'
+
+    - service: unmute
+      then:
+        - lambda: 'id(my_vol_ctrl).unmute();'
+
     - service: volume_up
+      variables:
+        diff: float
       then:
-        - lambda: 'id(my_vol_ctrl).volume_change_from_hass(1);'
-    
+        - lambda: 'id(my_vol_ctrl).volume_change_from_hass(diff);'
+
     - service: volume_down
+      variables:
+        diff: float
       then:
-        - lambda: 'id(my_vol_ctrl).volume_change_from_hass(-1);'
+        - lambda: 'id(my_vol_ctrl).volume_change_from_hass(-diff);'
 
 ota:
   platform: esphome
@@ -118,6 +140,34 @@ sensor:
     on_anticlockwise:
       - lambda: 'id(my_vol_ctrl).process_encoder_change(-1);'
 
+  - platform: template
+    name: "Current Volume"
+    id: current_volume_sensor
+    unit_of_measurement: "dB"
+    accuracy_decimals: 1
+    state_class: measurement
+    device_class: sound_pressure
+    update_interval: 2s
+    lambda: |-
+      float volume = id(my_vol_ctrl).get_volume();
+      if (volume >= 0.0f)
+        return volume;
+      return {};
+    on_value:
+      then:
+        - lambda: |-
+            // Keep the media player slider in sync with the real speaker volume
+            float fraction = std::min(std::max(x / ${ha_volume_range}, 0.0f), 1.0f);
+            float current = id(media_player_volume_control)->volume;
+            if (isnan(current) || fabs(current - fraction) > 0.01f) {
+              id(updating_from_sensor) = true;
+              auto call = id(media_player_volume_control)->make_call();
+              call.set_volume(fraction);
+              call.perform();
+            }
+        - delay: 100ms
+        - lambda: 'id(updating_from_sensor) = false;'
+
 binary_sensor:
   - platform: gpio
     pin: 
@@ -135,3 +185,51 @@ binary_sensor:
     on_release:
       then:
         - lambda: 'id(my_vol_ctrl).button_released();'
+
+  - platform: template
+    name: "Speaker Muted"
+    id: speaker_muted_sensor
+    lambda: 'return id(my_vol_ctrl).is_muted();'
+
+number:
+  - platform: template
+    name: "Volume Level"
+    id: volume_level_number
+    min_value: 0
+    max_value: ${ha_volume_range}
+    step: 1
+    unit_of_measurement: "dB"
+    mode: slider
+    update_interval: 2s
+    lambda: |-
+      float volume = id(my_vol_ctrl).get_volume();
+      if (volume >= 0.0f)
+        return volume;
+      return {};
+    set_action:
+      then:
+        - lambda: 'id(my_vol_ctrl).set_volume_from_hass(x);'
+
+# Fake media player (dummy I2S pins, nothing is played) so Home Assistant gets a native volume slider.
+i2s_audio:
+  i2s_lrclk_pin: GPIO13  # fake pin
+  i2s_bclk_pin: GPIO21   # fake pin
+
+media_player:
+  - platform: i2s_audio
+    name: "Volume Control"
+    dac_type: external
+    i2s_dout_pin: GPIO22  # fake pin
+    id: media_player_volume_control
+    on_state:
+      - if:
+          condition:
+            lambda: |-
+              // Ignore our own programmatic updates (see the volume sensor below)
+              float v = id(media_player_volume_control)->volume;
+              return !id(updating_from_sensor) && !isnan(v) && v >= 0.0f;
+          then:
+            - lambda: |-
+                float volume_db = id(media_player_volume_control)->volume * ${ha_volume_range};
+                ESP_LOGI("media_player", "Volume changed from Home Assistant: %.1f dB", volume_db);
+                id(my_vol_ctrl).set_volume_from_hass(volume_db);
