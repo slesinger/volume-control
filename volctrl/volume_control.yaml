@@ -83,6 +83,28 @@ api:
       then:
         - lambda: 'id(my_vol_ctrl).deep_sleep();'
 
+    - service: cycle_input
+      then:
+        - lambda: 'id(my_vol_ctrl).cycle_input();'
+
+    - service: set_input
+      variables:
+        input: string
+      then:
+        - lambda: 'id(my_vol_ctrl).set_input(input);'
+
+    - service: pause
+      then:
+        - lambda: 'id(my_vol_ctrl).pause();'
+
+    - service: next
+      then:
+        - lambda: 'id(my_vol_ctrl).next();'
+
+    - service: previous
+      then:
+        - lambda: 'id(my_vol_ctrl).previous();'
+
     - service: mute
       then:
         - lambda: 'id(my_vol_ctrl).mute();'
@@ -133,6 +155,7 @@ vol_ctrl:
   id: my_vol_ctrl
   spi_id: spi1
   backlight_pin: backlight_output
+  wiim_ip: auto  # WiiM streamer: IPv4 address, or auto to find it via SSDP; remove the line to disable WiiM features
   max_volume: 100  # dB, soft cap for every volume sent to the speakers (hardware maximum is 120)
 
 sensor:
@@ -196,6 +219,46 @@ binary_sensor:
       then:
         - lambda: 'id(my_vol_ctrl).button_released();'
 
+  # Extra push buttons: A = cycle WiiM input, B = play/pause, C = next track
+  - platform: gpio
+    pin:
+      number: GPIO32
+      mode: INPUT_PULLUP
+    name: "Push Button A"
+    id: push_button_a
+    filters:
+      - invert:
+      - delayed_on: 50ms
+      - delayed_off: 50ms
+    on_press:
+      - lambda: 'id(my_vol_ctrl).cycle_input();'
+
+  - platform: gpio
+    pin:
+      number: GPIO33
+      mode: INPUT_PULLUP
+    name: "Push Button B"
+    id: push_button_b
+    filters:
+      - invert:
+      - delayed_on: 50ms
+      - delayed_off: 50ms
+    on_press:
+      - lambda: 'id(my_vol_ctrl).pause();'
+
+  - platform: gpio
+    pin:
+      number: GPIO14
+      mode: INPUT_PULLUP
+    name: "Push Button C"
+    id: push_button_c
+    filters:
+      - invert:
+      - delayed_on: 50ms
+      - delayed_off: 50ms
+    on_press:
+      - lambda: 'id(my_vol_ctrl).next();'
+
   - platform: template
     name: "Speaker Muted"
     id: speaker_muted_sensor
@@ -243,3 +306,49 @@ media_player:
                 float volume_db = id(media_player_volume_control)->volume * ${ha_volume_range};
                 ESP_LOGI("media_player", "Volume changed from Home Assistant: %.1f dB", volume_db);
                 id(my_vol_ctrl).set_volume_from_hass(volume_db);
+
+text_sensor:
+  - platform: template
+    name: "Current Audio Input"
+    id: current_audio_input_sensor
+    update_interval: 5s
+    lambda: |-
+      std::string input = id(my_vol_ctrl).get_current_input();
+      if (input.empty())
+        return {};
+      return input;
+
+select:
+  - platform: template
+    name: "Audio Input"
+    id: audio_input_select
+    optimistic: false
+    options:
+      - "Network"
+      - "Bluetooth"
+      - "Line-In"
+      - "Optical"
+    update_interval: 5s
+    lambda: |-
+      std::string input = id(my_vol_ctrl).get_current_input();
+      if (input.empty())
+        return {};
+      return input;
+    set_action:
+      - lambda: 'id(my_vol_ctrl).set_input(x);'
+
+button:
+  - platform: template
+    name: "Cycle Input"
+    on_press:
+      - lambda: 'id(my_vol_ctrl).cycle_input();'
+
+  - platform: template
+    name: "Play Pause"
+    on_press:
+      - lambda: 'id(my_vol_ctrl).pause();'
+
+  - platform: template
+    name: "Next Track"
+    on_press:
+      - lambda: 'id(my_vol_ctrl).next();'

@@ -44,6 +44,11 @@ namespace esphome
       // Initialize network subsystem
       network::init();
       network::start();
+      if (this->wiim_enabled_)
+      {
+        wiim::init(this->wiim_ip_);
+        wiim::start();
+      }
 
       // Add a small delay to let things settle
       esphome::delay(500);
@@ -119,7 +124,20 @@ namespace esphome
         display::update_mute_status(this->tft_, true, state->requested_volume);
       else if (state != nullptr && (force || changed.mute_changed))
         display::update_mute_status(this->tft_, false, state->requested_volume);
-      display::update_status_message(this->tft_, "Long-press for menu");
+      std::string message = "Long-press for menu";
+      if (this->wiim_enabled_)
+      {
+        // WiiM indicator, plus input and track on the bottom line while it is reachable
+        wiim::Status wiim_status = wiim::get_status();
+        display::update_wiim_status(this->tft_, wiim_status.available);
+        if (wiim_status.available && !wiim_status.input.empty())
+        {
+          message = wiim_status.input;
+          if (wiim_status.playing && !wiim_status.title.empty())
+            message += ": " + (wiim_status.artist.empty() ? wiim_status.title : wiim_status.artist + " - " + wiim_status.title);
+        }
+      }
+      display::update_status_message(this->tft_, message);
       display::update_wifi_status(this->tft_, wifi::global_wifi_component->is_connected());
     }
 
@@ -131,6 +149,7 @@ namespace esphome
       uint32_t now = millis();
       const bool wifi_connected = wifi::global_wifi_component->is_connected();
       network::set_online(wifi_connected);
+      wiim::set_online(wifi_connected);
       check_deep_sleep_(now);
 
       if (!wifi_connected)

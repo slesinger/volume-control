@@ -20,6 +20,10 @@ ScreenRegion get_wifi_region() {
   return {42, 0, 20, TOP_AREA_HEIGHT};
 }
 
+ScreenRegion get_wiim_region() {
+  return {140, 0, 14, TOP_AREA_HEIGHT};  // between the speaker dots and the date/time
+}
+
 ScreenRegion get_speaker_dots_region() {
   return {62, 12, 50, TOP_AREA_HEIGHT};  // Area where speaker dots appear
 }
@@ -76,6 +80,15 @@ void update_wifi_status(TFT_eSPI *tft, bool connected) {
   // Large arc
   tft->drawCircle(x, y + region.h, 13, color);
   tft->fillRect(x - 13, y + region.h, 28, 14, TFT_BLACK); // Erase bottom half
+}
+
+void update_wiim_status(TFT_eSPI *tft, bool available) {
+  ScreenRegion region = get_wiim_region();
+  tft->setTextFont(2);
+  tft->setTextSize(1);
+  tft->setTextColor(available ? TFT_GREEN : TFT_RED, TFT_BLACK);
+  tft->setTextDatum(TL_DATUM);
+  tft->drawString("W", region.x, region.y);
 }
 
 void update_speaker_dots(TFT_eSPI *tft, const std::map<std::string, DeviceState> &states) {
@@ -175,7 +188,14 @@ void update_status_message(TFT_eSPI *tft, const std::string &status) {
   tft->setTextFont(4);  // Use smaller font 2 for status messages to ensure they fit
   tft->setTextColor(TFT_ORANGE, TFT_BLACK);
   tft->setTextSize(1);
-  tft->drawString(status.c_str(), region.w / 2, region.y);
+
+  // Shorten long messages (e.g. track titles) so they stay on the screen
+  std::string text = status;
+  while (text.size() > 3 && tft->textWidth(text.c_str()) > region.w - 4) {
+    text.resize(text.size() - 4);
+    text += "...";
+  }
+  tft->drawString(text.c_str(), region.w / 2, region.y);
 
 }
 

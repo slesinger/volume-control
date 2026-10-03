@@ -7,6 +7,7 @@
 #include <string>
 #include "device_state.h"
 #include "network.h"
+#include "wiim.h"
 #include "esphome/core/preferences.h"
 
 // Forward-declare the TFT_eSPI class instead of including the whole header
@@ -40,6 +41,7 @@ class VolCtrl : public Component, public spi::SPIDevice<spi::BIT_ORDER_MSB_FIRST
   // Configuration
   void set_backlight_pin(output::FloatOutput *backlight_pin) { backlight_pin_ = backlight_pin; }
   void set_max_volume(float max_volume) { max_volume_ = max_volume; }
+  void set_wiim_ip(const std::string &ip) { wiim_ip_ = ip; wiim_enabled_ = true; }
   float get_max_volume() const { return max_volume_; }
 
   // Display brightness (0-100 %), persisted in NVS
@@ -59,6 +61,14 @@ class VolCtrl : public Component, public spi::SPIDevice<spi::BIT_ORDER_MSB_FIRST
   // Home Assistant entry points. Ignored while the menu is open.
   void set_volume_from_hass(float level);
   void volume_change_from_hass(float diff);
+
+  // WiiM streamer controls (no-ops while the WiiM is not configured or offline)
+  void pause() { wiim::toggle_play(); }
+  void next() { wiim::next(); }
+  void previous() { wiim::previous(); }
+  void cycle_input() { wiim::cycle_input(); }
+  void set_input(const std::string &input) { wiim::set_input(input); }
+  std::string get_current_input() { return wiim::get_status().input; }
 
   // State for Home Assistant entities (representative speaker). Volume is -1 while unknown.
   float get_volume();
@@ -102,6 +112,10 @@ class VolCtrl : public Component, public spi::SPIDevice<spi::BIT_ORDER_MSB_FIRST
   int menu_level_{0};  // 0 = main menu, 1 = submenu, etc.
   int menu_position_{0};
   int menu_items_count_{0};
+
+  // WiiM streamer
+  bool wiim_enabled_{false};
+  std::string wiim_ip_;  // empty = discover
 
   // Upper bound for any volume sent to the speakers (dB)
   float max_volume_{120.0f};

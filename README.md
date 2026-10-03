@@ -4,7 +4,9 @@ For DSP enabled speakers that can be controlled over network IPv6.
 
 - KH-120 II
 - KH-150
-- ??
+- there must be more ...
+
+![Volume Control Device](docs/vyrobek.png)
 
 ## Features
 - Automatic speaker discovery
@@ -13,7 +15,11 @@ For DSP enabled speakers that can be controlled over network IPv6.
 - Display of current volume level
 - Display speaker settings
 - Set parametric equalizer settings
-- Works with Home Assistant
+- Works with Home Assistant (services and entities, see below)
+- 3 extra push buttons (A: cycle WiiM input, B: play/pause, C: next track)
+- WiiM streamer control: input selection, play/pause, next/previous, current input and track on screen (optional)
+- Display brightness (menu 7.2 or HA), persisted in NVS
+- Deep sleep after all speakers were unreachable for a while (menu 7.4), the encoder button wakes it up
 
 It uses Senheiser Sound Control Protocol (SSP) to control the volume of the speakers and reading and setting parameters.
 
@@ -173,6 +179,30 @@ This section shows menu structure and how to navigate through it.
   7.2. Set backlight
   7.3. Display timeout to stop backlight
   7.4. Set ESP deep sleep timeout (to save power)
+
+Extra push buttons (to GND, internal pull-ups): A -> GPIO32, B -> GPIO33, C -> GPIO14.
+
+## WiiM streamer (optional)
+
+Set `wiim_ip` in `volctrl/volume_control.yaml` under `vol_ctrl:` to the WiiM's IPv4 address, or to `auto` to find it
+with SSDP. Without the option all WiiM features are off. It uses the WiiM HTTP API
+(`docs/HTTP_API_for_WiiM_Products.md`); all requests run on a background task.
+
+# Home Assistant Integration
+
+Services (`esphome.volume_control_<name>`): `set_volume(level)`, `volume_up(diff)`, `volume_down(diff)`,
+`toggle_mute`, `mute`, `unmute`, `set_display_brightness(brightness)`, `deep_sleep`,
+`cycle_input`, `set_input(input)`, `pause`, `next`, `previous`.
+
+```yaml
+action: esphome.volume_control_volume_up
+data:
+  diff: 2
+```
+
+Entities: `Volume Level` (number), `Current Volume` and `Speaker Muted` (sensors), `Volume Control` (media player,
+volume slider only), `Audio Input` (select), `Current Audio Input`, buttons `Cycle Input`, `Play Pause`, `Next Track`.
+HA sees volume as 0..`ha_volume_range` dB (yaml substitution, default 60) so a slider cannot reach the full 120 dB.
 
 # Resources
 

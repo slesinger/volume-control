@@ -50,4 +50,5 @@ Found by code inspection (not hardware-tested). Ordered by priority. Mark `[x]` 
 - `max_volume` option (yaml: 100 dB) caps every volume sent.
 - Fixed off-by-one in `extract_json_value`; removed duplicated `utils/json.*`, `utils/datetime.*`.
 
+- Branch `port-master-ideas`: HA services/entities, WiiM control (own worker task, HTTP API only, no UPnP), brightness editor and deep sleep (settings persisted in NVS), "Deep sleep timeout" menu row no longer overlaps (#13 for the volume settings submenu, count 7 -> 5), extra push buttons. Compile-checked only.
 - Branch `async`: all socket I/O moved to a FreeRTOS worker task (`network.cpp`). Writes are coalesced (latest volume/mute per speaker), polls back off to 5 s for unreachable speakers, and polls that race with a write are discarded. `loop()` and the encoder/button callbacks no longer touch the network.
