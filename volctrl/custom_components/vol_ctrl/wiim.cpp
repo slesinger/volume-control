@@ -166,7 +166,8 @@ bool poll(const std::string &host) {
   next.checked = true;
   std::string value;
   next.input = input_for_mode(json_string(body, "mode", value) ? atoi(value.c_str()) : 10);
-  next.playing = json_string(body, "status", value) && value == "play";
+  // Some sources (Qobuz) report "none" while playing, so only an explicit pause/stop counts as not playing
+  next.playing = json_string(body, "status", value) && value != "pause" && value != "stop";
 
   if (next.playing && http_get(host, "/httpapi.asp?command=getMetaInfo", body)) {
     json_string(body, "title", next.title);

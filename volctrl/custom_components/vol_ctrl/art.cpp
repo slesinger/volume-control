@@ -53,7 +53,12 @@ void dim() {
   }
 }
 
-bool load(const std::string &url) {
+bool load(std::string url) {
+  // Qobuz serves the same cover in several sizes; the small one is plenty and saves memory and time
+  const size_t qobuz = url.find("static.qobuz.com/");
+  if (qobuz != std::string::npos && url.size() > 8 && url.compare(url.size() - 8, 8, "_600.jpg") == 0)
+    url.replace(url.size() - 8, 8, "_230.jpg");
+
   if (pixels == nullptr)
     pixels = static_cast<uint16_t *>(heap_caps_malloc(SIZE * SIZE * sizeof(uint16_t), MALLOC_CAP_8BIT));
   if (pixels == nullptr) {

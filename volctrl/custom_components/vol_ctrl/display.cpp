@@ -1,6 +1,7 @@
 // ...existing code...
 #include "display.h"
 #include "art.h"
+#include "background.h"
 #include "device_state.h"
 #include <TFT_eSPI.h>
 #include <algorithm>
@@ -10,51 +11,13 @@ namespace vol_ctrl {
 namespace display {
 
 
-// ---- Dark stone background ----
-// A 64x64 tile of mottled dark grey is generated once (2 value-noise octaves + fine grain, wrapping so it tiles)
-// and drawn in absolute screen coordinates, so any partial update restores exactly the texture that was there.
-// Text is drawn transparent (single-colour setTextColor) on top of it.
-static const int TILE = 64;
-static uint16_t tile[TILE * TILE];
-static bool tile_ready = false;
+// ---- Background ----
+// The default background is a 240x240 picture in flash (background.h), drawn in absolute screen coordinates so any
+// partial update restores exactly what was there. While the WiiM plays, the album art replaces it (art.cpp).
+// Text is drawn transparent (single-colour setTextColor) on top.
 static uint32_t screen_epoch = 1;  // bumped whenever the whole screen is wiped; cached draws compare against it
 
-static uint32_t hash2(int x, int y, uint32_t seed) {
-  uint32_t h = static_cast<uint32_t>(x) * 374761393u + static_cast<uint32_t>(y) * 668265263u + seed * 2246822519u;
-  h = (h ^ (h >> 13)) * 1274126177u;
-  return h ^ (h >> 16);
-}
-
-static float lattice(int x, int y, int cells, uint32_t seed) {
-  return (hash2(((x % cells) + cells) % cells, ((y % cells) + cells) % cells, seed) & 0xFF) / 255.0f;
-}
-
-static float value_noise(int px, int py, int cells, uint32_t seed) {
-  const int cell = TILE / cells;
-  int x0 = px / cell, y0 = py / cell;
-  float fx = (px % cell) / static_cast<float>(cell), fy = (py % cell) / static_cast<float>(cell);
-  fx = fx * fx * (3 - 2 * fx);
-  fy = fy * fy * (3 - 2 * fy);
-  float a = lattice(x0, y0, cells, seed), b = lattice(x0 + 1, y0, cells, seed);
-  float c = lattice(x0, y0 + 1, cells, seed), d = lattice(x0 + 1, y0 + 1, cells, seed);
-  return (a + (b - a) * fx) + ((c + (d - c) * fx) - (a + (b - a) * fx)) * fy;
-}
-
-static void build_tile() {
-  for (int y = 0; y < TILE; y++) {
-    for (int x = 0; x < TILE; x++) {
-      float n = 0.6f * value_noise(x, y, 4, 1) + 0.3f * value_noise(x, y, 8, 2);
-      float grain = (hash2(x, y, 3) & 0xFF) / 255.0f;
-      int v = 34 + static_cast<int>(n * 34 + grain * 8);  // about 34..76 of 255: still dark enough for white text
-      int r = v + 2, g = v + 1, b = v;
-      tile[y * TILE + x] = static_cast<uint16_t>(((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3));
-    }
-  }
-  tile_ready = true;
-}
-
 static void fill_bg(TFT_eSPI *tft, int x, int y, int w, int h) {
-  if (!tile_ready) build_tile();
   if (x < 0) { w += x; x = 0; }
   if (y < 0) { h += y; y = 0; }
   if (x + w > 240) w = 240 - x;
@@ -70,9 +33,7 @@ static void fill_bg(TFT_eSPI *tft, int x, int y, int w, int h) {
         art::row(y + row + r, x, w, &buf[r * w]);
         continue;
       }
-      const uint16_t *src = &tile[((y + row + r) % TILE) * TILE];
-      uint16_t *dst = &buf[r * w];
-      for (int i = 0; i < w; i++) dst[i] = src[(x + i) % TILE];
+      memcpy(&buf[r * w], &BACKGROUND_IMAGE[(y + row + r) * 240 + x], w * sizeof(uint16_t));
     }
     tft->pushImage(x, y + row, w, rows, buf);
   }
