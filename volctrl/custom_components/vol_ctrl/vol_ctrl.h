@@ -25,7 +25,9 @@ class VolCtrl : public Component, public spi::SPIDevice<spi::BIT_ORDER_MSB_FIRST
   void loop() override;
   void dump_config() override;
   
-  float get_setup_priority() const override { return esphome::setup_priority::AFTER_CONNECTION; }
+  // Before WiFi: the display comes up immediately instead of after the connection (setups of lower
+  // priority wait for it). Everything that needs the network is deferred to loop() / the worker tasks.
+  float get_setup_priority() const override { return esphome::setup_priority::HARDWARE; }
   void update_whole_screen();
 
   // User interface methods
@@ -106,6 +108,11 @@ class VolCtrl : public Component, public spi::SPIDevice<spi::BIT_ORDER_MSB_FIRST
   PollResult pending_changes_;  // changes folded in since the last redraw
   uint32_t last_wifi_draw_{0};
   bool force_redraw_{true};  // draw everything on the first poll, e.g. dots for speakers that start offline
+
+  // Encoder button
+  uint32_t button_press_time_{0};
+  bool button_down_{false};
+  bool long_press_handled_{false};
 
   // Menu state
   bool in_menu_{false};

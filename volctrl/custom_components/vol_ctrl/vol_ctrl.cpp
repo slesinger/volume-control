@@ -17,7 +17,7 @@ namespace esphome
   {
 
     static const char *const TAG = "vol_ctrl";
-    static uint32_t button_press_time_ = 0;
+    constexpr uint32_t LONG_PRESS_MS = 300;
 
     void VolCtrl::setup()
     {
@@ -28,7 +28,9 @@ namespace esphome
       this->tft_->init();
       this->tft_->setRotation(0);
       this->tft_->fillScreen(TFT_BLACK);
-      // Do not display anything yet, wait for main loop to draw the UI
+      // The component sets up before WiFi (see get_setup_priority) and the other setups wait for the connection,
+      // so say so right away instead of showing a black screen
+      display::update_status_message(this->tft_, "Connecting to WiFi");
 
       // Restore persisted settings (brightness, deep sleep timeout)
       this->settings_pref_ = global_preferences->make_preference<Settings>(fnv1_hash("vol_ctrl_settings"));
@@ -49,9 +51,6 @@ namespace esphome
         wiim::init(this->wiim_ip_);
         wiim::start();
       }
-
-      // Add a small delay to let things settle
-      esphome::delay(500);
     }
 
     void VolCtrl::dump_config()
@@ -147,6 +146,16 @@ namespace esphome
     void VolCtrl::loop()
     {
       uint32_t now = millis();
+
+      // Open the menu as soon as the button has been held long enough, not only when it is released
+      if (button_down_ && !long_press_handled_ && now - button_press_time_ > LONG_PRESS_MS)
+      {
+        long_press_handled_ = true;
+        ESP_LOGI(TAG, "Long press detected");
+        if (!in_menu_)
+          enter_menu();
+      }
+
       const bool wifi_connected = wifi::global_wifi_component->is_connected();
       network::set_online(wifi_connected);
       wiim::set_online(wifi_connected);
@@ -305,25 +314,21 @@ namespace esphome
     void VolCtrl::button_pressed()
     {
       button_press_time_ = millis();
+      button_down_ = true;
+      long_press_handled_ = false;
     }
 
     void VolCtrl::button_released()
     {
+      button_down_ = false;
       if (adjusting_brightness_)
       {
         exit_brightness_adjustment();
         return;
       }
-      uint32_t press_duration = millis() - button_press_time_;
-      if (press_duration > 300)
-      { // long press threshold
-        ESP_LOGI(TAG, "Long press detected (%ums)", press_duration);
-        enter_menu();
-      }
-      else
-      {
-        toggle_mute();
-      }
+      if (long_press_handled_)
+        return;  // loop() already acted on the long press (opened the menu)
+      toggle_mute();  // short press: mute, or select in the menu
     }
 
     void VolCtrl::toggle_mute()

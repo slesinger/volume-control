@@ -45,6 +45,7 @@ esp32:
 wifi:
   ssid: !secret wifi_ssid
   password: !secret wifi_password
+  fast_connect: true  # skip the scan of all channels, saves seconds at boot (single access point at home)
 
 network:
     enable_ipv6: true

@@ -156,9 +156,12 @@ struct Link {
   uint32_t write_epoch = 0;   // bumped on every request, used to discard polls that raced with a write
   uint32_t last_write_ms = 0;
   uint32_t next_poll_ms = 0;
+  uint8_t failed_polls = 0;   // consecutive, drives the back-off
 };
 
 constexpr uint32_t POLL_INTERVAL_UP_MS = 1500;
+constexpr uint32_t POLL_INTERVAL_FAST_RETRY_MS = 500;  // first failures: the first connect often loses to neighbour discovery
+constexpr uint8_t FAST_RETRIES = 6;
 constexpr uint32_t POLL_INTERVAL_DOWN_MS = 5000;  // back off from unreachable speakers (each attempt costs a connect timeout)
 constexpr uint32_t QUIET_AFTER_WRITE_MS = 400;    // let the speaker settle before reading its state back
 
@@ -262,7 +265,10 @@ void worker_task(void *) {
       if (epoch != l.write_epoch) {
         l.next_poll_ms = millis() + 100;  // a write happened meanwhile, the reading is stale
       } else {
-        l.next_poll_ms = millis() + (update.is_up ? POLL_INTERVAL_UP_MS : POLL_INTERVAL_DOWN_MS);
+        l.failed_polls = update.is_up ? 0 : (l.failed_polls < 255 ? l.failed_polls + 1 : 255);
+        l.next_poll_ms = millis() + (update.is_up ? POLL_INTERVAL_UP_MS
+                                     : l.failed_polls <= FAST_RETRIES ? POLL_INTERVAL_FAST_RETRY_MS
+                                                                       : POLL_INTERVAL_DOWN_MS);
         bool replaced = false;
         for (auto &u : updates) {
           if (u.ipv6 == update.ipv6) {

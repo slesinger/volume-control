@@ -2,121 +2,130 @@
 #include "display.h"
 #include "device_state.h"
 #include <TFT_eSPI.h>
+#include <initializer_list>
 
 namespace esphome {
 namespace vol_ctrl {
 namespace display {
 
-// Screen region constants
-const int TOP_AREA_HEIGHT = 14;
-const int BOTTOM_AREA_HEIGHT = 20;
+// Screen layout. The top bar is two rows of font 4 (26 px): status icons, then the date/time.
+const int TOP_ROW_HEIGHT = 28;
+const int TOP_AREA_HEIGHT = 2 * TOP_ROW_HEIGHT;
+const int BOTTOM_AREA_HEIGHT = 30;
+// The volume digits (and the mute sign) are centred in what is left in between
+const int VOLUME_AREA_Y = TOP_AREA_HEIGHT;
+const int VOLUME_AREA_HEIGHT = 240 - TOP_AREA_HEIGHT - BOTTOM_AREA_HEIGHT;
+const int VOLUME_CENTER_Y = VOLUME_AREA_Y + VOLUME_AREA_HEIGHT / 2;
+
+// Menu rows: font 4, one row every MENU_ROW_HEIGHT px below the title
+const int MENU_TOP = 32;
+const int MENU_ROW_HEIGHT = 28;
+const int MENU_LEFT = 22;  // room for the highlight dot
+
+int menu_row_y(int position) {
+  return MENU_TOP + position * MENU_ROW_HEIGHT;
+}
 
 // Screen region getters for partial updates
 ScreenRegion get_standby_time_region() {
-  return {0, 0, 41, TOP_AREA_HEIGHT};
+  return {0, 0, 50, TOP_ROW_HEIGHT};
 }
 
 ScreenRegion get_wifi_region() {
-  return {42, 0, 20, TOP_AREA_HEIGHT};
-}
-
-ScreenRegion get_wiim_region() {
-  return {140, 0, 14, TOP_AREA_HEIGHT};  // between the speaker dots and the date/time
+  return {52, 0, 48, TOP_ROW_HEIGHT};
 }
 
 ScreenRegion get_speaker_dots_region() {
-  return {62, 12, 50, TOP_AREA_HEIGHT};  // Area where speaker dots appear
+  return {108, 0, 90, TOP_ROW_HEIGHT};  // Area where speaker dots appear
+}
+
+ScreenRegion get_wiim_region() {
+  return {208, 0, 28, TOP_ROW_HEIGHT};
 }
 
 ScreenRegion get_datetime_region() {
-  return {240, 0, 100, TOP_AREA_HEIGHT};
+  return {0, TOP_ROW_HEIGHT, 240, TOP_ROW_HEIGHT};  // second row, centred
 }
 
 ScreenRegion get_volume_region() {
-  return {0, TOP_AREA_HEIGHT+10, 240, 120};  // Center area where volume is displayed
+  return {0, VOLUME_AREA_Y, 240, VOLUME_AREA_HEIGHT};  // Center area where volume is displayed
 }
 
 ScreenRegion get_bottom_line_region() {
   return {0, 240 - BOTTOM_AREA_HEIGHT, 240, BOTTOM_AREA_HEIGHT};
 }
 
+// Every drawing function sets the text datum and padding it relies on: they are global TFT state.
 void update_standby_time(TFT_eSPI *tft, int standby_time) {
-  // Clear previous text
   ScreenRegion region = get_standby_time_region();
   tft->fillRect(region.x, region.y, region.w, region.h, TFT_BLACK);
-  
-  // Draw new standby time
-  tft->setTextFont(2);
+
+  tft->setTextFont(4);
   tft->setTextColor(TFT_WHITE, TFT_BLACK);
   tft->setTextSize(1);
+  tft->setTextDatum(TL_DATUM);
   char buf[16];
   if (standby_time > 0) {
     snprintf(buf, sizeof(buf), "%dm", standby_time);
-    tft->drawString(buf, region.x, region.y);
   } else {
-    tft->drawString("--m", region.x, region.y);
+    snprintf(buf, sizeof(buf), "--m");
   }
+  tft->drawString(buf, region.x, region.y + 1);
 }
 
 void update_wifi_status(TFT_eSPI *tft, bool connected) {
   ScreenRegion region = get_wifi_region();
-  // Draw icon
-  int x = region.x;
-  int y = region.y;
   uint16_t color = connected ? TFT_GREEN : TFT_RED;
-  
-  // Draw a dot at the bottom center
-  tft->fillCircle(x, y + region.h, 2, color);
-  
-  // Draw three curves with increasing size to represent signal strength
-  // Small arc
-  tft->drawCircle(x, y + region.h, 5, color);
-  tft->fillRect(x - 5, y + region.h, 10, 6, TFT_BLACK); // Erase bottom half
-  
-  // Medium arc 
-  tft->drawCircle(x, y + region.h, 9, color);
-  tft->fillRect(x - 9, y + region.h, 18, 10, TFT_BLACK); // Erase bottom half
-  
-  // Large arc
-  tft->drawCircle(x, y + region.h, 13, color);
-  tft->fillRect(x - 13, y + region.h, 28, 14, TFT_BLACK); // Erase bottom half
+
+  // Arcs centred on the bottom edge of the top row; the viewport clips the lower halves away
+  const int cx = region.x + region.w / 2;
+  const int cy = region.y + region.h;
+  tft->setViewport(region.x, region.y, region.w, region.h, false);
+  tft->fillRect(region.x, region.y, region.w, region.h, TFT_BLACK);
+  tft->fillCircle(cx, cy, 4, color);
+  for (int radius = 10; radius <= 26; radius += 8) {
+    tft->drawCircle(cx, cy, radius, color);
+    tft->drawCircle(cx, cy, radius - 1, color);
+  }
+  tft->resetViewport();
 }
 
 void update_wiim_status(TFT_eSPI *tft, bool available) {
   ScreenRegion region = get_wiim_region();
-  tft->setTextFont(2);
+  tft->fillRect(region.x, region.y, region.w, region.h, TFT_BLACK);
+  tft->setTextFont(4);
   tft->setTextSize(1);
   tft->setTextColor(available ? TFT_GREEN : TFT_RED, TFT_BLACK);
   tft->setTextDatum(TL_DATUM);
-  tft->drawString("W", region.x, region.y);
+  tft->drawString("W", region.x + 2, region.y + 1);
 }
 
 void update_speaker_dots(TFT_eSPI *tft, const std::map<std::string, DeviceState> &states) {
   ScreenRegion region = get_speaker_dots_region();
   int idx = 0;
   int rect_height = region.h;
-  int rect_width = region.h / 2 + 2;
+  int rect_width = 18;
   int spacing = 4;
 
   for (const auto &entry : states) {
     const DeviceState &state = entry.second;
     uint16_t color = state.is_up ? TFT_GREEN : TFT_RED;
     int x = region.x + idx * (rect_width + spacing);
-    tft->fillRect(x, 0, rect_width, rect_height, color);
-    tft->drawRect(x, 0, rect_width, rect_height, TFT_DARKGREY);
+    tft->fillRect(x, region.y, rect_width, rect_height, color);
+    tft->drawRect(x, region.y, rect_width, rect_height, TFT_DARKGREY);
     idx++;
   }
 }
 
 void update_datetime(TFT_eSPI *tft, const std::string &datetime) {
   ScreenRegion region = get_datetime_region();
-  // Draw new datetime
-  tft->setTextFont(2);
+  tft->setTextFont(4);
   tft->setTextColor(TFT_WHITE, TFT_BLACK);
   tft->setTextSize(1);
-  tft->setTextDatum(TR_DATUM);
-  tft->drawString(datetime.c_str(), region.x, region.y);
   tft->setTextDatum(MC_DATUM);
+  tft->setTextPadding(region.w);  // clears the rest of the row, so a shorter string leaves nothing behind
+  tft->drawString(datetime.c_str(), region.x + region.w / 2, region.y + region.h / 2);
+  tft->setTextPadding(0);
 }
 
 void update_volume_display(TFT_eSPI *tft, float volume, bool user_adjusting) {
@@ -125,13 +134,14 @@ void update_volume_display(TFT_eSPI *tft, float volume, bool user_adjusting) {
   static int last_digits = 0;
   int digits = volume < 0.0f ? 2 : (static_cast<int>(volume) >= 100 ? 3 : 2);
   if (digits != last_digits) {
-    tft->fillRect(0, TOP_AREA_HEIGHT + 10, 240, 240 - BOTTOM_AREA_HEIGHT - TOP_AREA_HEIGHT - 12, TFT_BLACK);
+    ScreenRegion region = get_volume_region();
+    tft->fillRect(region.x, region.y, region.w, region.h, TFT_BLACK);
     last_digits = digits;
   }
 
-  // Draw new volume
   tft->setTextFont(8);
-  tft->setTextSize(2);
+  tft->setTextSize(1);
+  tft->setTextDatum(MC_DATUM);
   char buf[8];
 
   // Format volume display
@@ -150,15 +160,14 @@ void update_volume_display(TFT_eSPI *tft, float volume, bool user_adjusting) {
     tft->setTextColor(TFT_YELLOW, TFT_BLACK);
   }
 
-  // Draw volume
-  int y = tft->height()/2 - 8;
-  tft->drawString(buf, tft->width()/2, y);
+  tft->drawString(buf, tft->width() / 2, VOLUME_CENTER_Y);
 }
 
 void update_mute_status(TFT_eSPI *tft, bool muted, float volume) {
   if (!muted) {
     // Wipe the red mute icon (it extends beyond the digits) before redrawing the volume
-    tft->fillRect(0, TOP_AREA_HEIGHT + 10, 240, 240 - BOTTOM_AREA_HEIGHT - TOP_AREA_HEIGHT - 12, TFT_BLACK);
+    ScreenRegion region = get_volume_region();
+    tft->fillRect(region.x, region.y, region.w, region.h, TFT_BLACK);
     update_volume_display(tft, volume);
     return; // Avoid drawing mute sign if not muted
   }
@@ -166,10 +175,10 @@ void update_mute_status(TFT_eSPI *tft, bool muted, float volume) {
   // Draw new mute icon if muted
   if (muted) {
     int x = tft->width()/2;
-    int y = tft->height()/2 - 8;
-    int halfsize = 44;
+    int y = VOLUME_CENTER_Y;
+    int halfsize = 36;
     int thickness = 8;
-    int radius = halfsize+18;
+    int radius = halfsize+16;
     
     for (int i = -thickness/2; i <= thickness/2; ++i) {
       tft->drawLine(x-halfsize+i, y-halfsize-i, x+halfsize+i, y+halfsize-i, TFT_RED);
@@ -185,9 +194,10 @@ void update_status_message(TFT_eSPI *tft, const std::string &status) {
   ScreenRegion region = get_bottom_line_region();
   tft->fillRect(region.x, region.y, region.w, region.h, TFT_BLACK);
   
-  tft->setTextFont(4);  // Use smaller font 2 for status messages to ensure they fit
+  tft->setTextFont(4);
   tft->setTextColor(TFT_ORANGE, TFT_BLACK);
   tft->setTextSize(1);
+  tft->setTextDatum(MC_DATUM);
 
   // Shorten long messages (e.g. track titles) so they stay on the screen
   std::string text = status;
@@ -195,130 +205,111 @@ void update_status_message(TFT_eSPI *tft, const std::string &status) {
     text.resize(text.size() - 4);
     text += "...";
   }
-  tft->drawString(text.c_str(), region.w / 2, region.y);
-
+  tft->drawString(text.c_str(), region.w / 2, region.y + region.h / 2);
 }
 
 // Menu drawing functions
 void draw_menu_item_highlight(TFT_eSPI *tft, int position, int prev_position) {
   // Clear previous highlight
   if (prev_position >= 0) {
-    tft->fillRect(0, 52 + (prev_position * 20), 14, 14, TFT_BLACK);
+    tft->fillRect(0, menu_row_y(prev_position), MENU_LEFT - 2, MENU_ROW_HEIGHT, TFT_BLACK);
   }
-  
+
   // Draw new highlight
-  tft->fillCircle(7, 58 + (position * 20), 5, TFT_ORANGE);
+  tft->fillCircle(9, menu_row_y(position) + 13, 6, TFT_ORANGE);
+}
+
+static void draw_menu_items(TFT_eSPI *tft, std::initializer_list<const char *> items) {
+  tft->setTextColor(TFT_WHITE, TFT_BLACK);
+  tft->setTextFont(4);
+  int row = 0;
+  for (const char *item : items)
+    tft->drawString(item, MENU_LEFT, menu_row_y(row++) + 1);
 }
 
 void draw_menu_screen(TFT_eSPI *tft, int menu_level, int menu_position, int menu_items_count) {
-  const int MENU_LEFT = 20; // Left margin for menu items
-  // Clear screen
   tft->fillScreen(TFT_BLACK);
-  tft->setTextDatum(TL_DATUM); // Top-left alignment
-  
-  // Draw menu title
+  tft->setTextDatum(TL_DATUM);
+  tft->setTextSize(1);
+  tft->setTextPadding(0);
+
+  // Menu title
   tft->setTextFont(4);
   tft->setTextColor(TFT_ORANGE, TFT_BLACK);
-  
+
   if (menu_level == 0) {
-    // Main menu
-    tft->drawString("MENU", 10, 10);
-    
-    // Draw menu items
-    tft->setTextColor(TFT_WHITE, TFT_BLACK);
-    tft->setTextFont(2);
-    tft->drawString("1. Exit menu", MENU_LEFT, 50);
-    tft->drawString("2. List speakers", MENU_LEFT, 70);
-    tft->drawString("3. Speaker details", MENU_LEFT, 90);
-    tft->drawString("4. Parametric EQ", MENU_LEFT, 110);
-    tft->drawString("5. Discover devices", MENU_LEFT, 130);
-    tft->drawString("6. Set speaker params", MENU_LEFT, 150);
-    tft->drawString("7. Volume Control settings", MENU_LEFT, 170);
+    tft->drawString("MENU", 10, 2);
+    draw_menu_items(tft, {"Exit menu", "List speakers", "Speaker info", "Parametric EQ", "Discover devices",
+                          "Speaker params", "Volume setup"});
   } else if (menu_level == 1) {
     // Submenu rendering based on parent menu item
     switch (menu_items_count) {
-      case 4: // Parametric EQ submenu
-        tft->drawString("PARAMETRIC EQ", 10, 10);
-        tft->setTextColor(TFT_WHITE, TFT_BLACK);
-        tft->setTextFont(2);
-        tft->drawString(".. Back", MENU_LEFT, 50);
-        tft->drawString("1. List EQs", MENU_LEFT, 70);
-        tft->drawString("2. Add EQ", MENU_LEFT, 90);
+      case 4:  // Parametric EQ submenu
+        tft->drawString("PARAMETRIC EQ", 10, 2);
+        draw_menu_items(tft, {"Back", "List EQs", "Add EQ"});
         break;
-        
-      case 6: // Speaker parameters submenu
-        tft->drawString("SET SPEAKER PRMS", 0, 10);
-        tft->setTextColor(TFT_WHITE, TFT_BLACK);
-        tft->setTextFont(2);
-        tft->drawString(".. Back", MENU_LEFT, 50);
-        tft->drawString("1. Logo brightness", MENU_LEFT, 70);
-        tft->drawString("2. Set delay", MENU_LEFT, 90);
-        tft->drawString("3. Standby timeout", MENU_LEFT, 110);
-        tft->drawString("4. Auto standby", MENU_LEFT, 130);
+
+      case 6:  // Speaker parameters submenu
+        tft->drawString("SPEAKER PARAMS", 10, 2);
+        draw_menu_items(tft, {"Back", "Logo bright.", "Delay", "Standby time", "Auto standby"});
         break;
-        
-      case 5: // Volume settings submenu
-        tft->drawString("VOLUME SETTINGS", 10, 10);
-        tft->setTextColor(TFT_WHITE, TFT_BLACK);
-        tft->setTextFont(2);
-        tft->drawString(".. Back", MENU_LEFT, 50);
-        tft->drawString("1. Volume step", MENU_LEFT, 70);
-        tft->drawString("2. Backlight intensity", MENU_LEFT, 90);
-        tft->drawString("3. Display timeout", MENU_LEFT, 110);
-        tft->drawString("4. Deep sleep timeout", MENU_LEFT, 130);
+
+      case 5:  // Volume settings submenu
+        tft->drawString("VOLUME SETUP", 10, 2);
+        draw_menu_items(tft, {"Back", "Volume step", "Backlight", "Disp. timeout", "Deep sleep"});
         break;
-        
+
       default:
-        tft->drawString("SUBMENU ErRoR", 10, 10);
-        tft->setTextFont(2);
-        tft->drawString(".. Back", MENU_LEFT, 50);
+        tft->drawString("SUBMENU ERROR", 10, 2);
+        draw_menu_items(tft, {"Back"});
         break;
     }
   }
-  
+
   // Draw highlight for current position
   draw_menu_item_highlight(tft, menu_position, -1);
 }
 
-
 void draw_menu_value(TFT_eSPI *tft, int position, const std::string &value) {
-  const int ROW_Y = 50 + position * 20;
-  tft->fillRect(150, ROW_Y, 90, 16, TFT_BLACK);
-  tft->setTextFont(2);
+  tft->fillRect(150, menu_row_y(position), 90, MENU_ROW_HEIGHT, TFT_BLACK);
+  tft->setTextFont(4);
+  tft->setTextSize(1);
   tft->setTextColor(TFT_YELLOW, TFT_BLACK);
   tft->setTextDatum(TR_DATUM);
-  tft->drawString(value.c_str(), 236, ROW_Y);
+  tft->drawString(value.c_str(), 236, menu_row_y(position) + 1);
   tft->setTextDatum(TL_DATUM);
 }
 
 void draw_brightness_adjustment_screen(TFT_eSPI *tft, int brightness) {
   tft->fillScreen(TFT_BLACK);
+  tft->setTextSize(1);
+  tft->setTextPadding(0);
   tft->setTextDatum(TL_DATUM);
 
   tft->setTextFont(4);
   tft->setTextColor(TFT_ORANGE, TFT_BLACK);
-  tft->drawString("BRIGHTNESS", 10, 10);
+  tft->drawString("BRIGHTNESS", 10, 2);
 
   tft->setTextFont(6);
   tft->setTextColor(TFT_YELLOW, TFT_BLACK);
   char brightness_str[16];
   snprintf(brightness_str, sizeof(brightness_str), "%d%%", brightness);
-  tft->drawString(brightness_str, (tft->width() - tft->textWidth(brightness_str)) / 2, 80);
+  tft->drawString(brightness_str, (tft->width() - tft->textWidth(brightness_str)) / 2, 60);
 
   const int BAR_WIDTH = 200;
   const int BAR_HEIGHT = 20;
   const int BAR_X = (tft->width() - BAR_WIDTH) / 2;
-  const int BAR_Y = 150;
+  const int BAR_Y = 140;
   tft->drawRect(BAR_X, BAR_Y, BAR_WIDTH, BAR_HEIGHT, TFT_WHITE);
   int fill_width = (BAR_WIDTH - 4) * brightness / 100;
   if (fill_width > 0)
     tft->fillRect(BAR_X + 2, BAR_Y + 2, fill_width, BAR_HEIGHT - 4, TFT_YELLOW);
 
-  tft->setTextFont(2);
+  tft->setTextFont(4);
   tft->setTextColor(TFT_WHITE, TFT_BLACK);
   tft->setTextDatum(TC_DATUM);
-  tft->drawString("Turn encoder to adjust", tft->width() / 2, 190);
-  tft->drawString("Press button to save", tft->width() / 2, 210);
+  tft->drawString("Turn: adjust", tft->width() / 2, 176);
+  tft->drawString("Press: save", tft->width() / 2, 206);
   tft->setTextDatum(TL_DATUM);
 }
 
