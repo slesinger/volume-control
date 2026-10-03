@@ -41,12 +41,12 @@ class VolCtrl : public Component, public spi::SPIDevice<spi::BIT_ORDER_MSB_FIRST
   // Standard ESPHome methods
   void setup() override;
   void loop() override;
+  void dump_config() override;
   
   float get_setup_priority() const override { return esphome::setup_priority::AFTER_CONNECTION; }
   void update_whole_screen();
 
   // User interface methods
-  void volume_change(const std::string &ipv6, float requested_volume);
   void button_pressed();
   void button_released();
   void toggle_mute();
@@ -82,20 +82,33 @@ class VolCtrl : public Component, public spi::SPIDevice<spi::BIT_ORDER_MSB_FIRST
   void menu_up();
   void menu_down();
   void menu_select();
-  
-  // Direct volume setting for Home Assistant
+
+  // Home Assistant entry points. Ignored while the menu is open.
   void set_volume_from_hass(float level);
   void volume_change_from_hass(float diff);
 
-  // Process encoder changes by directly querying speakers for current volume
+  // Encoder entry point: diff is the number of detents turned (negative = counter-clockwise).
   void process_encoder_change(int diff);
 
-  // Helper for HA services
-  const std::map<std::string, DeviceState>& get_device_states() {
-    return network::get_device_states();
-  }
-
  protected:
+  struct PollResult {
+    bool is_up_changed{false};
+    bool standby_changed{false};
+    bool mute_changed{false};
+  };
+
+  // Query all speakers and update their state. Failed polls only mark the speaker as down.
+  PollResult poll_devices_();
+  // Speaker whose values represent the group on screen (first reachable one, else the first).
+  DeviceState *representative_state_();
+  float clamp_volume_(float volume) const;
+  // Clamp and send a volume to one speaker, updating its state. Skips speakers known to be down.
+  bool apply_volume_(const std::string &ipv6, DeviceState &state, float volume);
+  // Redraw the main screen; with force=true every region, otherwise only the regions flagged in `changed`.
+  void draw_status_(const PollResult &changed, bool force);
+  // Move every reachable speaker by `diff` dB, clamped to [0, max_volume_].
+  void step_volume_(float diff);
+
   // TFT display instance
   TFT_eSPI *tft_{nullptr};
   

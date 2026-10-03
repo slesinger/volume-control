@@ -192,6 +192,25 @@ void VolCtrl::loop() {
           }
         }
       }
+
+      if (now - this->last_device_check_ <= 1500)
+        return;
+      this->last_device_check_ = now;
+
+      // The menu owns the screen and polling would only add latency to navigation
+      if (in_menu_)
+        return;
+
+      PollResult changed = poll_devices_();
+      draw_status_(changed, force_redraw_);
+      force_redraw_ = false;
+    } // end of loop()
+
+    void VolCtrl::update_whole_screen()
+    {
+      poll_devices_();
+      this->tft_->fillScreen(TFT_BLACK);
+      draw_status_(PollResult{}, true);
     }
   }
   
@@ -401,80 +420,203 @@ void VolCtrl::menu_up() {
     if (menu_position_ < 0) {
       menu_position_ = menu_items_count_ - 1;
     }
-    
-    // Update the menu display
-    display::draw_menu_item_highlight(this->tft_, menu_position_, prev_position);
-  }
-}
 
-void VolCtrl::menu_down() {
-  if (in_menu_) {
-    int prev_position = menu_position_;
-    menu_position_++;
-    if (menu_position_ >= menu_items_count_) {
-      menu_position_ = 0;
+    void VolCtrl::button_released()
+    {
+      uint32_t press_duration = millis() - button_press_time_;
+      if (press_duration > 300)
+      { // long press threshold
+        ESP_LOGI(TAG, "Long press detected (%ums)", press_duration);
+        enter_menu();
+      }
+      else
+      {
+        toggle_mute();
+      }
     }
-    
-    // Update the menu display
-    display::draw_menu_item_highlight(this->tft_, menu_position_, prev_position);
-  }
-}
 
-void VolCtrl::menu_select() {
-  if (in_menu_) {
-    ESP_LOGI(TAG, "Selected menu item %d", menu_position_);
-    
-    switch (menu_level_) {
-      case 0:  // Main menu
-        if (menu_position_ == 0) {
-          // Exit menu
-          exit_menu();
-          return;
-        } else if (menu_position_ == 1) {
-          // Show devices
-          // TODO: Implement device listing screen
-        } else if (menu_position_ == 2) {
-          // Show settings
-          // TODO: Implement settings screen
-        } else if (menu_position_ == 3) {
-          // Parametric EQ submenu
-          menu_level_ = 1;  // Enter EQ submenu
-          menu_position_ = 0;
-          menu_items_count_ = 4;
-        } else if (menu_position_ == 4) {
-          // Discover devices
-          // This needs to trigger a new network discovery
-          // TODO: Implement discovery trigger
-        } else if (menu_position_ == 5) {
-          // Speaker parameters submenu
-          menu_level_ = 1;  // Enter speaker parameters submenu
-          menu_position_ = 0;
-          menu_items_count_ = 6;
-        } else if (menu_position_ == 6) {
-          // Volume settings submenu
-          menu_level_ = 1;  // Enter volume settings submenu
-          menu_position_ = 0;
-          menu_items_count_ = 7;
-          // TODO: Implement volume settings submenu
+    void VolCtrl::toggle_mute()
+    {
+      // If we're in menu mode, use this as a select button
+      if (in_menu_)
+      {
+        ESP_LOGI(TAG, "Button pressed in menu - selecting item");
+        menu_select();
+        return;
+      }
+
+      // One target for all speakers: mute unless every reachable speaker is already muted
+      auto &device_states = network::get_device_states();
+      bool any_unmuted = false;
+      for (auto &entry : device_states)
+      {
+        if (entry.second.is_up && !entry.second.muted)
+          any_unmuted = true;
+      }
+      const bool target = any_unmuted;
+      ESP_LOGI(TAG, "Setting mute to %s on all speakers", target ? "on" : "off");
+
+      for (auto &entry : device_states)
+      {
+        if (entry.second.is_up && network::set_device_mute(entry.first, target))
+          entry.second.set_mute(target);
+      }
+
+      DeviceState *state = representative_state_();
+      if (state != nullptr)
+        display::update_mute_status(this->tft_, state->muted, state->requested_volume);
+    }
+
+    void VolCtrl::enter_menu()
+    {
+      uint32_t now = millis();
+
+      if (!in_menu_)
+      {
+        ESP_LOGI(TAG, "Entering menu");
+        in_menu_ = true;
+        menu_level_ = 0;
+        menu_position_ = 0;
+        menu_items_count_ = 7; // Number of items in main menu
+
+        // Draw the menu
+        display::draw_menu_screen(this->tft_, menu_level_, menu_position_, menu_items_count_);
+      }
+    }
+
+    void VolCtrl::exit_menu()
+    {
+      if (in_menu_)
+      {
+        ESP_LOGI(TAG, "Exiting menu");
+        in_menu_ = false;
+        menu_level_ = 0;
+        menu_position_ = 0;
+
+        // Force a full redraw when exiting menu
+        update_whole_screen();
+      }
+    }
+
+    void VolCtrl::menu_up()
+    {
+      if (in_menu_)
+      {
+        int prev_position = menu_position_;
+        menu_position_--;
+        if (menu_position_ < 0)
+        {
+          menu_position_ = menu_items_count_ - 1;
         }
-        break;
-        
-      case 1:  // EQ submenu
-        if (menu_position_ == 0) {
-          // Back to main menu
-          menu_level_ = 0;
+
+        // Update the menu display
+        display::draw_menu_item_highlight(this->tft_, menu_position_, prev_position);
+      }
+    }
+
+    void VolCtrl::menu_down()
+    {
+      if (in_menu_)
+      {
+        int prev_position = menu_position_;
+        menu_position_++;
+        if (menu_position_ >= menu_items_count_)
+        {
           menu_position_ = 0;
-          menu_items_count_ = 7;
         }
-        // TODO: Implement other EQ submenu items
-        break;
-        
-      case 2:  // Speaker parameters submenu
-        if (menu_position_ == 0) {
-          // Back to main menu
-          menu_level_ = 0;
-          menu_position_ = 0;
-          menu_items_count_ = 7;
+
+        // Update the menu display
+        display::draw_menu_item_highlight(this->tft_, menu_position_, prev_position);
+      }
+    }
+
+    void VolCtrl::menu_select()
+    {
+      if (in_menu_)
+      {
+        ESP_LOGI(TAG, "Selected menu item %d", menu_position_);
+
+        switch (menu_level_)
+        {
+        case 0: // Main menu
+          if (menu_position_ == 0)
+          {
+            // Exit menu
+            exit_menu();
+            return;
+          }
+          else if (menu_position_ == 1)
+          {
+            // Show devices
+            // TODO: Implement device listing screen
+          }
+          else if (menu_position_ == 2)
+          {
+            // Show settings
+            // TODO: Implement settings screen
+          }
+          else if (menu_position_ == 3)
+          {
+            // Parametric EQ submenu
+            menu_level_ = 1; // Enter EQ submenu
+            menu_position_ = 0;
+            menu_items_count_ = 4;
+          }
+          else if (menu_position_ == 4)
+          {
+            // Discover devices
+            // This needs to trigger a new network discovery
+            // TODO: Implement discovery trigger
+          }
+          else if (menu_position_ == 5)
+          {
+            // Speaker parameters submenu
+            menu_level_ = 1; // Enter speaker parameters submenu
+            menu_position_ = 0;
+            menu_items_count_ = 6;
+          }
+          else if (menu_position_ == 6)
+          {
+            // Volume settings submenu
+            menu_level_ = 1; // Enter volume settings submenu
+            menu_position_ = 0;
+            menu_items_count_ = 7;
+            // TODO: Implement volume settings submenu
+          }
+          break;
+
+        case 1: // EQ submenu
+          if (menu_position_ == 0)
+          {
+            // Back to main menu
+            menu_level_ = 0;
+            menu_position_ = 0;
+            menu_items_count_ = 7;
+          }
+          // TODO: Implement other EQ submenu items
+          break;
+
+        case 2: // Speaker parameters submenu
+          if (menu_position_ == 0)
+          {
+            // Back to main menu
+            menu_level_ = 0;
+            menu_position_ = 0;
+            menu_items_count_ = 7;
+          }
+          // TODO: Implement other speaker parameters submenu items
+          break;
+
+        case 3: // Volume settings submenu
+          if (menu_position_ == 0)
+          {
+            // Back to main menu
+            menu_level_ = 0;
+            menu_position_ = 0;
+            menu_items_count_ = 7;
+          }
+          // TODO: Implement other volume settings submenu items
+          break;
         }
         // TODO: Implement other speaker parameters submenu items
         break;
@@ -621,6 +763,9 @@ void VolCtrl::process_encoder_change(int diff) {
         // Since volume from device was confirmed yellow, this is the first rotation diff
         requested_vol = vol;
       }
+
+      ESP_LOGD(TAG, "Encoder diff %d", diff);
+      step_volume_(static_cast<float>(diff));
     }
     requested_vol = requested_vol + diff;  // TODO handle sensitivity well here
     state.set_requested_volume(requested_vol);

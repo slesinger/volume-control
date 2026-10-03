@@ -1,5 +1,6 @@
 #pragma once
 
+#include <map>
 #include <string>
 #include <vector>
 #include "device_state.h"
@@ -20,6 +21,7 @@ namespace esphome
 
             // Network-related functions
             bool send_ssc_command(const std::string &ipv6, const std::string &command, std::string &response);
+            // On failure `data` is left untouched, so callers must check the return value.
             bool get_device_data(const std::string &ipv6, DeviceVolStdbyData &data);
             bool set_device_volume(const std::string &ipv6, float volume);
             bool set_device_mute(const std::string &ipv6, bool mute);
@@ -27,8 +29,8 @@ namespace esphome
             // Register device for monitoring
             void register_device(const std::string &name, const std::string &ipv6);
 
-            // Get device state map reference
-            const std::map<std::string, DeviceState> &get_device_states();
+            // Get device state map reference (mutable: the UI layer updates state in place)
+            std::map<std::string, DeviceState> &get_device_states();
 
             // Initialize network subsystem
             void init();

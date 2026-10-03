@@ -24,7 +24,8 @@ It uses Senheiser Sound Control Protocol (SSP) to control the volume of the spea
 
 ## TODO
 
-deep sleep - switch of display vcc. make display off during seep sleep
+deep sleep - switch of display vcc
+make display off during seep sleep
 zabudovat hw do top-case
 deepsleep kdyz repraky usnou
 discover wiim and display input
@@ -36,9 +37,9 @@ curl -X GET "https://192.168.1.245/httpapi.asp?command=getMetaInfo" -k | jq
 {
   "metaData": {
     "album": "Best of the Best",
-    "title": "Medlik je nejlepsi",
+    "title": "Červená řeka",
     "subtitle": "unknow",
-    "artist": "Med World",
+    "artist": "Helena Vondrackova",
     "albumArtURI": "https://static.qobuz.com/images/covers/4a/hh/clin57z27hh4a_600.jpg",
     "sampleRate": "44100",
     "bitDepth": "16",
