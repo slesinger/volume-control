@@ -106,7 +106,10 @@ class VolCtrl : public Component, public spi::SPIDevice<spi::BIT_ORDER_MSB_FIRST
   // Redraw the main screen; with force=true every region, otherwise only the regions flagged in `changed`.
   void draw_status_(const PollResult &changed, bool force);
   // Move every reachable speaker by `diff` dB, clamped to [0, max_volume_].
-  void step_volume_(float diff);
+  float group_volume_();
+    void resync_volumes_();
+    uint32_t last_volume_request_{0};
+    void step_volume_(float diff);
 
   // TFT display instance
   TFT_eSPI *tft_{nullptr};

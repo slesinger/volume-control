@@ -344,16 +344,16 @@ select:
 
 button:
   - platform: template
-    name: "Cycle Input"
+    name: "Button A"
     on_press:
       - lambda: 'id(my_vol_ctrl).cycle_input();'
 
   - platform: template
-    name: "Play Pause"
+    name: "Button B"
     on_press:
       - lambda: 'id(my_vol_ctrl).pause();'
 
   - platform: template
-    name: "Next Track"
+    name: "Button C"
     on_press:
       - lambda: 'id(my_vol_ctrl).next();'

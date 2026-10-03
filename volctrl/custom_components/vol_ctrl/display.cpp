@@ -33,7 +33,7 @@ ScreenRegion get_standby_time_region() {
 
 // The wifi icon and the speaker blocks are as high as the digits of the standby time next to them
 const int ICON_TOP = 3;
-const int ICON_HEIGHT = 20;
+const int ICON_HEIGHT = 16;
 
 ScreenRegion get_wifi_region() {
   return {52, ICON_TOP, 48, ICON_HEIGHT};
@@ -95,7 +95,7 @@ void update_wifi_status(TFT_eSPI *tft, LinkState state) {
   tft->setViewport(region.x, region.y, region.w, region.h, false);
   tft->fillRect(region.x, region.y, region.w, region.h, TFT_BLACK);
   tft->fillCircle(cx, cy, 3, color);
-  for (int radius = 7; radius <= 19; radius += 6) {
+  for (int radius = 5; radius <= 15; radius += 5) {
     tft->drawCircle(cx, cy, radius, color);
     tft->drawCircle(cx, cy, radius - 1, color);
   }
