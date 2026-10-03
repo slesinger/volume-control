@@ -158,23 +158,26 @@ vol_ctrl:
   spi_id: spi1
   backlight_pin: backlight_output
   wiim_ip: auto  # WiiM streamer: IPv4 address, or auto to find it via SSDP; remove the line to disable WiiM features
+  encoder_pin_a: GPIO26
+  encoder_pin_b: GPIO27
+  # Entries of the "Home Assistant" menu. Each one fires an event that a Home Assistant automation can react to
+  # (trigger: Event, type esphome.volume_control_action, event data action: lights_off). Edit freely.
+  quick_actions:
+    - name: "Lights off"
+      then:
+        - homeassistant.event:
+            event: esphome.volume_control_action
+            data:
+              action: lights_off
+    - name: "Movie mode"
+      then:
+        - homeassistant.event:
+            event: esphome.volume_control_action
+            data:
+              action: movie_mode
   max_volume: 100  # dB, soft cap for every volume sent to the speakers (hardware maximum is 120)
 
 sensor:
-  - platform: rotary_encoder
-    id: volume_encoder
-    pin_a: GPIO26
-    pin_b: GPIO27
-    resolution: 1
-    # The component only needs the direction of each detent, not the absolute count, so the
-    # count may wrap/saturate freely and no start-up diffing is needed.
-    min_value: -1000000
-    max_value: 1000000
-    on_clockwise:
-      - lambda: 'id(my_vol_ctrl).process_encoder_change(1);'
-    on_anticlockwise:
-      - lambda: 'id(my_vol_ctrl).process_encoder_change(-1);'
-
   - platform: template
     name: "Current Volume"
     id: current_volume_sensor

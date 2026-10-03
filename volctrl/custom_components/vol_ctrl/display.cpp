@@ -2,7 +2,7 @@
 #include "display.h"
 #include "device_state.h"
 #include <TFT_eSPI.h>
-#include <initializer_list>
+#include <algorithm>
 
 namespace esphome {
 namespace vol_ctrl {
@@ -31,12 +31,16 @@ ScreenRegion get_standby_time_region() {
   return {0, 0, 50, TOP_ROW_HEIGHT};
 }
 
+// The wifi icon and the speaker blocks are as high as the digits of the standby time next to them
+const int ICON_TOP = 3;
+const int ICON_HEIGHT = 20;
+
 ScreenRegion get_wifi_region() {
-  return {52, 0, 48, TOP_ROW_HEIGHT};
+  return {52, ICON_TOP, 48, ICON_HEIGHT};
 }
 
 ScreenRegion get_speaker_dots_region() {
-  return {108, 0, 90, TOP_ROW_HEIGHT};  // Area where speaker dots appear
+  return {108, ICON_TOP, 90, ICON_HEIGHT};  // Area where speaker dots appear
 }
 
 ScreenRegion get_wiim_region() {
@@ -90,8 +94,8 @@ void update_wifi_status(TFT_eSPI *tft, LinkState state) {
   const int cy = region.y + region.h;
   tft->setViewport(region.x, region.y, region.w, region.h, false);
   tft->fillRect(region.x, region.y, region.w, region.h, TFT_BLACK);
-  tft->fillCircle(cx, cy, 4, color);
-  for (int radius = 10; radius <= 26; radius += 8) {
+  tft->fillCircle(cx, cy, 3, color);
+  for (int radius = 7; radius <= 19; radius += 6) {
     tft->drawCircle(cx, cy, radius, color);
     tft->drawCircle(cx, cy, radius - 1, color);
   }
@@ -112,7 +116,7 @@ void update_speaker_dots(TFT_eSPI *tft, const std::map<std::string, DeviceState>
   ScreenRegion region = get_speaker_dots_region();
   int idx = 0;
   int rect_height = region.h;
-  int rect_width = 18;
+  int rect_width = 14;
   int spacing = 4;
 
   for (const auto &entry : states) {
@@ -217,78 +221,62 @@ void update_status_message(TFT_eSPI *tft, const std::string &status) {
 }
 
 // Menu drawing functions
-void draw_menu_item_highlight(TFT_eSPI *tft, int position, int prev_position) {
-  // Clear previous highlight
-  if (prev_position >= 0) {
-    tft->fillRect(0, menu_row_y(prev_position), MENU_LEFT - 2, MENU_ROW_HEIGHT, TFT_BLACK);
-  }
-
-  // Draw new highlight
-  tft->fillCircle(9, menu_row_y(position) + 13, 6, TFT_ORANGE);
+int menu_visible_rows() {
+  return (240 - MENU_TOP) / MENU_ROW_HEIGHT;
 }
 
-static void draw_menu_items(TFT_eSPI *tft, std::initializer_list<const char *> items) {
-  tft->setTextColor(TFT_WHITE, TFT_BLACK);
+void draw_menu_row(TFT_eSPI *tft, const MenuRow &row, int visible_index, bool selected) {
+  const int y = menu_row_y(visible_index);
+  tft->fillRect(0, y, 234, MENU_ROW_HEIGHT, TFT_BLACK);
   tft->setTextFont(4);
-  int row = 0;
-  for (const char *item : items)
-    tft->drawString(item, MENU_LEFT, menu_row_y(row++) + 1);
+  tft->setTextSize(1);
+  tft->setTextPadding(0);
+
+  if (selected)
+    tft->fillCircle(9, y + 13, 6, TFT_ORANGE);
+
+  tft->setTextColor(selected ? TFT_ORANGE : TFT_WHITE, TFT_BLACK);
+  tft->setTextDatum(TL_DATUM);
+  tft->drawString(row.label.c_str(), MENU_LEFT, y + 1);
+
+  if (row.submenu) {
+    // chevron
+    tft->fillTriangle(222, y + 6, 222, y + 20, 230, y + 13, selected ? TFT_ORANGE : TFT_DARKGREY);
+  } else if (!row.value.empty()) {
+    tft->setTextColor(TFT_YELLOW, TFT_BLACK);
+    tft->setTextDatum(TR_DATUM);
+    tft->drawString(row.value.c_str(), 230, y + 1);
+    tft->setTextDatum(TL_DATUM);
+  }
 }
 
-void draw_menu_screen(TFT_eSPI *tft, int menu_level, int menu_position, int menu_items_count) {
+void draw_menu(TFT_eSPI *tft, const std::string &title, const std::vector<MenuRow> &rows, int selected,
+               int first_visible) {
   tft->fillScreen(TFT_BLACK);
   tft->setTextDatum(TL_DATUM);
   tft->setTextSize(1);
   tft->setTextPadding(0);
-
-  // Menu title
   tft->setTextFont(4);
   tft->setTextColor(TFT_ORANGE, TFT_BLACK);
+  tft->drawString(title.c_str(), 10, 2);
 
-  if (menu_level == 0) {
-    tft->drawString("MENU", 10, 2);
-    draw_menu_items(tft, {"Exit menu", "List speakers", "Speaker info", "Parametric EQ", "Discover devices",
-                          "Speaker params", "Volume setup"});
-  } else if (menu_level == 1) {
-    // Submenu rendering based on parent menu item
-    switch (menu_items_count) {
-      case 4:  // Parametric EQ submenu
-        tft->drawString("PARAMETRIC EQ", 10, 2);
-        draw_menu_items(tft, {"Back", "List EQs", "Add EQ"});
-        break;
+  const int visible = menu_visible_rows();
+  for (int i = 0; i < visible && first_visible + i < static_cast<int>(rows.size()); i++)
+    draw_menu_row(tft, rows[first_visible + i], i, first_visible + i == selected);
 
-      case 6:  // Speaker parameters submenu
-        tft->drawString("SPEAKER PARAMS", 10, 2);
-        draw_menu_items(tft, {"Back", "Logo bright.", "Delay", "Standby time", "Auto standby"});
-        break;
-
-      case 5:  // Volume settings submenu
-        tft->drawString("VOLUME SETUP", 10, 2);
-        draw_menu_items(tft, {"Back", "Volume step", "Backlight", "Disp. timeout", "Deep sleep"});
-        break;
-
-      default:
-        tft->drawString("SUBMENU ERROR", 10, 2);
-        draw_menu_items(tft, {"Back"});
-        break;
-    }
+  // Scroll bar when the list does not fit
+  const int total = static_cast<int>(rows.size());
+  if (total > visible) {
+    const int track_y = MENU_TOP;
+    const int track_h = visible * MENU_ROW_HEIGHT;
+    tft->fillRect(236, track_y, 3, track_h, TFT_DARKGREY);
+    const int thumb_h = track_h * visible / total;
+    const int thumb_y = track_y + (track_h - thumb_h) * first_visible / (total - visible);
+    tft->fillRect(236, thumb_y, 3, thumb_h, TFT_WHITE);
   }
-
-  // Draw highlight for current position
-  draw_menu_item_highlight(tft, menu_position, -1);
 }
 
-void draw_menu_value(TFT_eSPI *tft, int position, const std::string &value) {
-  tft->fillRect(150, menu_row_y(position), 90, MENU_ROW_HEIGHT, TFT_BLACK);
-  tft->setTextFont(4);
-  tft->setTextSize(1);
-  tft->setTextColor(TFT_YELLOW, TFT_BLACK);
-  tft->setTextDatum(TR_DATUM);
-  tft->drawString(value.c_str(), 236, menu_row_y(position) + 1);
-  tft->setTextDatum(TL_DATUM);
-}
-
-void draw_brightness_adjustment_screen(TFT_eSPI *tft, int brightness) {
+void draw_editor_screen(TFT_eSPI *tft, const std::string &title, const std::string &value, float fraction) {
   tft->fillScreen(TFT_BLACK);
   tft->setTextSize(1);
   tft->setTextPadding(0);
@@ -296,20 +284,18 @@ void draw_brightness_adjustment_screen(TFT_eSPI *tft, int brightness) {
 
   tft->setTextFont(4);
   tft->setTextColor(TFT_ORANGE, TFT_BLACK);
-  tft->drawString("BRIGHTNESS", 10, 2);
+  tft->drawString(title.c_str(), 10, 2);
 
   tft->setTextFont(6);
   tft->setTextColor(TFT_YELLOW, TFT_BLACK);
-  char brightness_str[16];
-  snprintf(brightness_str, sizeof(brightness_str), "%d%%", brightness);
-  tft->drawString(brightness_str, (tft->width() - tft->textWidth(brightness_str)) / 2, 60);
+  tft->drawString(value.c_str(), (tft->width() - tft->textWidth(value.c_str())) / 2, 60);
 
   const int BAR_WIDTH = 200;
   const int BAR_HEIGHT = 20;
   const int BAR_X = (tft->width() - BAR_WIDTH) / 2;
   const int BAR_Y = 140;
   tft->drawRect(BAR_X, BAR_Y, BAR_WIDTH, BAR_HEIGHT, TFT_WHITE);
-  int fill_width = (BAR_WIDTH - 4) * brightness / 100;
+  int fill_width = static_cast<int>((BAR_WIDTH - 4) * std::min(std::max(fraction, 0.0f), 1.0f));
   if (fill_width > 0)
     tft->fillRect(BAR_X + 2, BAR_Y + 2, fill_width, BAR_HEIGHT - 4, TFT_YELLOW);
 

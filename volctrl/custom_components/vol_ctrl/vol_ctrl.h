@@ -10,6 +10,10 @@
 #include "wiim.h"
 #include "display.h"
 #include "esphome/core/preferences.h"
+#include "esphome/core/automation.h"
+#include "esphome/core/gpio.h"
+#include <functional>
+#include <vector>
 
 // Forward-declare the TFT_eSPI class instead of including the whole header
 class TFT_eSPI;
@@ -43,7 +47,8 @@ class VolCtrl : public Component, public spi::SPIDevice<spi::BIT_ORDER_MSB_FIRST
 
   // Configuration
   void set_backlight_pin(output::FloatOutput *backlight_pin) { backlight_pin_ = backlight_pin; }
-  void set_max_volume(float max_volume) { max_volume_ = max_volume; }
+  // Upper limit from yaml; the menu can only lower the active max volume below it
+  void set_max_volume(float max_volume) { max_volume_limit_ = max_volume; max_volume_ = max_volume; }
   void set_wiim_ip(const std::string &ip) { wiim_ip_ = ip; wiim_enabled_ = true; }
   float get_max_volume() const { return max_volume_; }
 
@@ -56,10 +61,11 @@ class VolCtrl : public Component, public spi::SPIDevice<spi::BIT_ORDER_MSB_FIRST
   int get_deep_sleep_timeout() const { return deep_sleep_timeout_; }
   void deep_sleep();  // wakes on the encoder button
 
-  // Menu navigation methods
-  void menu_up();
-  void menu_down();
-  void menu_select();
+  // Rotary encoder pins (decoded in an interrupt handler, see EncoderStore)
+  void set_encoder_pins(InternalGPIOPin *pin_a, InternalGPIOPin *pin_b) { pin_a_ = pin_a; pin_b_ = pin_b; }
+
+  // Entries of the Home Assistant menu
+  void add_quick_action(const std::string &name, Trigger<> *trigger) { quick_actions_.emplace_back(name, trigger); }
 
   // Home Assistant entry points. Ignored while the menu is open.
   void set_volume_from_hass(float level);
@@ -117,27 +123,85 @@ class VolCtrl : public Component, public spi::SPIDevice<spi::BIT_ORDER_MSB_FIRST
   bool button_down_{false};
   bool long_press_handled_{false};
 
-  // Menu state
+  // Rotary encoder. The interrupt handler tracks all four quarter steps and only reports a detent when a full
+  // cycle was completed, so contact bounce and half steps cannot add or lose clicks.
+  struct EncoderStore {
+    ISRInternalGPIOPin pin_a;
+    ISRInternalGPIOPin pin_b;
+    volatile int32_t detents{0};  // net clicks since loop() last took them (+ = clockwise)
+    uint8_t prev{0};
+    int8_t acc{0};  // quarter steps towards the next detent
+    static void gpio_intr(EncoderStore *arg);
+  };
+  EncoderStore encoder_;
+  InternalGPIOPin *pin_a_{nullptr};
+  InternalGPIOPin *pin_b_{nullptr};
+
+  // Menu (menu.cpp). The rows are rebuilt from the current state whenever they are drawn or refreshed.
+  enum class MenuId { MAIN, SPEAKERS, SPEAKER_PARAMS, VOLUME_SETUP, INFO, QUICK_ACTIONS };
+  struct MenuItem {
+    display::MenuRow row;
+    std::function<void()> on_select;  // empty = read-only row
+  };
+  struct MenuLevel {
+    MenuId id;
+    int position;
+    int first_visible;
+  };
+  // Number editor screen (encoder = value, press = save)
+  struct Editor {
+    bool active{false};
+    std::string title;
+    int min{0}, max{100}, step{1}, value{0};
+    std::function<std::string(int)> format;
+    std::function<void(int)> apply;  // called on every change
+    std::function<void()> done;      // called when saved
+  };
+  std::vector<MenuLevel> menu_stack_;
+  std::vector<MenuItem> menu_items_;
+  Editor editor_;
+  uint32_t last_menu_refresh_{0};
+  std::vector<MenuItem> build_menu_(MenuId id, std::string &title);
+  void open_menu_(MenuId id);
+  void menu_back_();
+  void redraw_menu_();
+  void refresh_menu_values_();
+  void menu_move_(int diff);
+  void menu_select_();
+  void open_editor_(const std::string &title, int min, int max, int step, int value,
+                    std::function<std::string(int)> format, std::function<void(int)> apply,
+                    std::function<void()> done);
+  void close_editor_();
   bool in_menu_{false};
-  int menu_level_{0};  // 0 = main menu, 1 = submenu, etc.
-  int menu_position_{0};
-  int menu_items_count_{0};
+  void send_to_speakers_(const std::string &json);
+  DeviceState *first_up_state_();
+
+  // Short press of the encoder button outside the menu
+  void short_press_action_();
+
+  // Quick actions
+  std::vector<std::pair<std::string, Trigger<> *>> quick_actions_;
 
   // WiiM streamer
   bool wiim_enabled_{false};
   std::string wiim_ip_;  // empty = discover
 
-  // Upper bound for any volume sent to the speakers (dB)
+  // Upper bound for any volume sent to the speakers (dB): active value, and the limit set in yaml
   float max_volume_{120.0f};
+  float max_volume_limit_{120.0f};
+  float volume_step_{1.0f};  // dB per encoder click
 
   // Backlight control
   output::FloatOutput *backlight_pin_{nullptr};
   int backlight_level_{100};  // 0-100 %
-  bool adjusting_brightness_{false};  // menu brightness editor is open
   void apply_brightness_();
-  void exit_brightness_adjustment();
-  void draw_volume_settings_values_();
-  void cycle_deep_sleep_timeout_();
+
+  // Screen off after this many seconds without input (0 = never); any input wakes it
+  int display_timeout_{0};
+  uint32_t last_interaction_{0};
+  bool display_off_{false};
+  void note_interaction_();
+  uint32_t last_standby_draw_{0};
 
   // Deep sleep
   int deep_sleep_timeout_{600};  // seconds, 0 = disabled
@@ -147,9 +211,14 @@ class VolCtrl : public Component, public spi::SPIDevice<spi::BIT_ORDER_MSB_FIRST
   // Settings persisted in NVS
   struct Settings
   {
+    uint32_t version;
     int brightness;
     int deep_sleep_timeout;
+    float max_volume;
+    float volume_step;
+    int display_timeout;
   };
+  static constexpr uint32_t SETTINGS_VERSION = 2;
   ESPPreferenceObject settings_pref_;
   void save_settings_();
 };

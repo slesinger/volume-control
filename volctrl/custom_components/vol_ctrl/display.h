@@ -2,6 +2,7 @@
 
 #include <string>
 #include <map>
+#include <vector>
 #include <TFT_eSPI.h>
 #include "device_state.h"
 
@@ -30,12 +31,19 @@ namespace esphome
             void update_standby_status(TFT_eSPI *tft, bool standby, bool prev_standby);
             void update_status_message(TFT_eSPI *tft, const std::string &status);
 
-            // Menu drawing functions
-            void draw_menu_item_highlight(TFT_eSPI *tft, int position, int prev_position);
-            void draw_menu_screen(TFT_eSPI *tft, int menu_level, int menu_position, int menu_items_count);
-            // Right-aligned current value of a menu row (e.g. "70%")
-            void draw_menu_value(TFT_eSPI *tft, int position, const std::string &value);
-            void draw_brightness_adjustment_screen(TFT_eSPI *tft, int brightness);
+            // Menu drawing
+            struct MenuRow
+            {
+                std::string label;
+                std::string value; // right-aligned
+                bool submenu = false;
+            };
+            int menu_visible_rows();
+            void draw_menu(TFT_eSPI *tft, const std::string &title, const std::vector<MenuRow> &rows, int selected,
+                           int first_visible);
+            void draw_menu_row(TFT_eSPI *tft, const MenuRow &row, int visible_index, bool selected);
+            // Full-screen value editor: big value and a bar (fraction 0..1)
+            void draw_editor_screen(TFT_eSPI *tft, const std::string &title, const std::string &value, float fraction);
 
             // Get screen regions for partial updates
             struct ScreenRegion

@@ -165,6 +165,7 @@ struct Link {
   uint32_t next_poll_ms = 0;
   uint8_t failed_polls = 0;   // consecutive, drives the back-off
   bool was_up = false;
+  std::vector<std::string> pending_raw;  // other writes (speaker parameters), sent in order
 };
 
 constexpr uint32_t POLL_INTERVAL_UP_MS = 1500;
@@ -185,11 +186,29 @@ Link *find_link(const std::string &ipv6) {
   return nullptr;
 }
 
+// Optional field of a reply: -1 when absent (older firmware, speaker without a logo, ...)
+int optional_int(const std::string &json, const char *key) {
+  size_t pos = json.find(std::string("\"") + key + "\":");
+  if (pos == std::string::npos) return -1;
+  pos += strlen(key) + 3;
+  return static_cast<int>(strtol(json.c_str() + pos, nullptr, 10));
+}
+
+int optional_bool(const std::string &json, const char *key) {
+  size_t pos = json.find(std::string("\"") + key + "\":");
+  if (pos == std::string::npos) return -1;
+  pos += strlen(key) + 3;
+  if (json.compare(pos, 4, "true") == 0) return 1;
+  if (json.compare(pos, 5, "false") == 0) return 0;
+  return -1;
+}
+
 // Blocking: only call from the worker task.
 bool get_device_data_blocking(const std::string &ipv6, DeviceVolStdbyData &data) {
   std::string response;
   if (!send_ssc_command(
-          ipv6, "{\"device\":{\"standby\":{\"countdown\":null}},\"audio\":{\"out\":{\"level\":null,\"mute\":null}}}",
+          ipv6, "{\"device\":{\"standby\":{\"countdown\":null,\"auto_standby_time\":null,\"enabled\":null}},"
+          "\"audio\":{\"out\":{\"level\":null,\"mute\":null}},\"ui\":{\"logo\":{\"brightness\":null}}}",
           response))
     return false;
 
@@ -204,6 +223,9 @@ bool get_device_data_blocking(const std::string &ipv6, DeviceVolStdbyData &data)
   data.volume = level;
   data.standby_countdown = static_cast<int>(countdown);
   data.mute = mute;
+  data.logo_brightness = optional_int(response, "brightness");
+  data.auto_standby_time = optional_int(response, "auto_standby_time");
+  data.auto_standby_enabled = optional_bool(response, "enabled");
   return true;
 }
 
@@ -235,6 +257,7 @@ void worker_task(void *) {
     for (auto &l : links) {
       bool has_volume, has_mute, mute;
       float volume;
+      std::vector<std::string> raw;
       {
         std::lock_guard<std::mutex> lock(mtx);
         has_volume = l.has_volume;
@@ -242,9 +265,17 @@ void worker_task(void *) {
         has_mute = l.has_mute;
         mute = l.mute;
         l.has_volume = l.has_mute = false;
-        if (has_volume || has_mute) l.last_write_ms = millis();
+        raw.swap(l.pending_raw);
+        if (has_volume || has_mute || !raw.empty()) l.last_write_ms = millis();
       }
       bool ok = true;
+      for (const auto &command : raw) {
+        std::string response;
+        if (!send_ssc_command(l.ipv6, command, response)) {
+          ESP_LOGW(TAG, "Failed to send %s to %s", command.c_str(), l.ipv6.c_str());
+          ok = false;
+        }
+      }
       if (has_mute) ok &= send_mute_blocking(l.ipv6, mute);
       if (has_volume) ok &= send_volume_blocking(l.ipv6, volume);
       if (!ok) {
@@ -259,7 +290,7 @@ void worker_task(void *) {
       uint32_t epoch;
       {
         std::lock_guard<std::mutex> lock(mtx);
-        bool due = time_reached(now, l.next_poll_ms) && !l.has_volume && !l.has_mute &&
+        bool due = time_reached(now, l.next_poll_ms) && !l.has_volume && !l.has_mute && l.pending_raw.empty() &&
                    (l.last_write_ms == 0 || now - l.last_write_ms >= QUIET_AFTER_WRITE_MS);
         if (!due) continue;
         epoch = l.write_epoch;
@@ -335,6 +366,23 @@ void request_mute(const std::string &ipv6, bool mute) {
     l->write_epoch++;
   }
   if (worker != nullptr) xTaskNotifyGive(worker);
+}
+
+void request_raw(const std::string &ipv6, const std::string &command) {
+  Link *l = find_link(ipv6);
+  if (l == nullptr) return;
+  {
+    std::lock_guard<std::mutex> lock(mtx);
+    if (l->pending_raw.size() < 8) l->pending_raw.push_back(command);
+    l->write_epoch++;
+  }
+  if (worker != nullptr) xTaskNotifyGive(worker);
+}
+
+std::string device_name(const std::string &ipv6) {
+  for (const auto &entry : device_map)
+    if (entry.second == ipv6) return entry.first;
+  return ipv6;
 }
 
 bool take_updates(std::vector<PollUpdate> &out) {

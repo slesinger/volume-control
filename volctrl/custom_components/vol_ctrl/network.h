@@ -17,6 +17,10 @@ namespace esphome
                 int standby_countdown = 0;
                 float volume = 0.0f;
                 bool mute = false;
+                // Optional extras, -1 when the speaker did not report them
+                int logo_brightness = -1;
+                int auto_standby_time = -1;     // minutes
+                int auto_standby_enabled = -1;  // 0 / 1
             };
 
             // Result of one background poll of a speaker
@@ -41,6 +45,12 @@ namespace esphome
             // Queue a write. Writes are coalesced: only the latest pending volume / mute per speaker is sent.
             void request_volume(const std::string &ipv6, float volume);
             void request_mute(const std::string &ipv6, bool mute);
+
+            // Queue any other SSC write (e.g. {"ui":{"logo":{"brightness":50}}}); sent in order, after volume / mute
+            void request_raw(const std::string &ipv6, const std::string &command);
+
+            // Name the speaker was registered with ("Left-6473470117"), or the address if unknown
+            std::string device_name(const std::string &ipv6);
 
             // Move the poll results gathered since the last call into `out` (latest per speaker).
             // Returns false when there is nothing new. Results made stale by a write issued meanwhile are dropped.

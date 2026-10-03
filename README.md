@@ -182,6 +182,17 @@ This section shows menu structure and how to navigate through it.
 
 Extra push buttons (to GND, internal pull-ups): A -> GPIO32, B -> GPIO33, C -> GPIO14.
 
+## Controls and menu (as implemented)
+
+- Turn: volume (step configurable, default 1 dB). Short press: play/pause on the WiiM (mute when no WiiM is configured).
+  Long press (opens as soon as the hold time is reached): menu; long press again inside the menu closes it.
+- Menu: Play/Pause, Next/Prev. track, Input, Mute, Home Assistant (your own quick actions, see `quick_actions` in the yaml,
+  they fire `esphome.volume_control_action` events), Speakers (online state, volume), Speaker params (logo brightness,
+  auto standby on/off and time, applied to all speakers), Volume setup (max volume, step, backlight, screen-off timeout,
+  deep sleep timeout; saved in NVS), Info (WiFi, IP, uptime, heap, build), Sleep now, Restart.
+- Parametric EQ, speaker delay and device discovery are not implemented.
+- The encoder is decoded by the component itself (debounced quarter-step state machine), not by ESPHome's rotary_encoder.
+
 ## WiiM streamer (optional)
 
 Set `wiim_ip` in `volctrl/volume_control.yaml` under `vol_ctrl:` to the WiiM's IPv4 address, or to `auto` to find it

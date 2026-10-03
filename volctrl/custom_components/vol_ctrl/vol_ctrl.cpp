@@ -38,16 +38,30 @@ namespace esphome
       gpio_hold_dis(BACKLIGHT_GPIO);
       gpio_deep_sleep_hold_dis();
 
-      // Restore persisted settings (brightness, deep sleep timeout)
+      // Restore persisted settings
       this->settings_pref_ = global_preferences->make_preference<Settings>(fnv1_hash("vol_ctrl_settings"));
       Settings saved;
-      if (this->settings_pref_.load(&saved) && saved.brightness >= MIN_BRIGHTNESS && saved.brightness <= 100 &&
-          saved.deep_sleep_timeout >= 0)
+      if (this->settings_pref_.load(&saved) && saved.version == SETTINGS_VERSION &&
+          saved.brightness >= MIN_BRIGHTNESS && saved.brightness <= 100 && saved.deep_sleep_timeout >= 0 &&
+          saved.max_volume >= 10.0f && saved.volume_step >= 0.5f && saved.display_timeout >= 0)
       {
         this->backlight_level_ = saved.brightness;
         this->deep_sleep_timeout_ = saved.deep_sleep_timeout;
+        this->max_volume_ = std::min(saved.max_volume, this->max_volume_limit_);  // yaml stays the upper limit
+        this->volume_step_ = saved.volume_step;
+        this->display_timeout_ = saved.display_timeout;
       }
       apply_brightness_();
+      this->last_interaction_ = millis();
+
+      // Rotary encoder: both pins interrupt on every edge
+      this->pin_a_->setup();
+      this->pin_b_->setup();
+      this->encoder_.pin_a = this->pin_a_->to_isr();
+      this->encoder_.pin_b = this->pin_b_->to_isr();
+      this->encoder_.prev = (this->pin_a_->digital_read() ? 2 : 0) | (this->pin_b_->digital_read() ? 1 : 0);
+      this->pin_a_->attach_interrupt(EncoderStore::gpio_intr, &this->encoder_, gpio::INTERRUPT_ANY_EDGE);
+      this->pin_b_->attach_interrupt(EncoderStore::gpio_intr, &this->encoder_, gpio::INTERRUPT_ANY_EDGE);
 
       // Initialize network subsystem
       network::init();
@@ -62,7 +76,11 @@ namespace esphome
     void VolCtrl::dump_config()
     {
       ESP_LOGCONFIG(TAG, "Volume Control:");
-      ESP_LOGCONFIG(TAG, "  Max volume: %.1f dB", this->max_volume_);
+      ESP_LOGCONFIG(TAG, "  Max volume: %.1f dB (limit %.1f dB), step %.1f dB", this->max_volume_,
+                    this->max_volume_limit_, this->volume_step_);
+      ESP_LOGCONFIG(TAG, "  Display timeout: %d s (0 = off)", this->display_timeout_);
+      LOG_PIN("  Encoder pin A: ", this->pin_a_);
+      LOG_PIN("  Encoder pin B: ", this->pin_b_);
       ESP_LOGCONFIG(TAG, "  Brightness: %d%%", this->backlight_level_);
       ESP_LOGCONFIG(TAG, "  Deep sleep timeout: %d s (0 = off)", this->deep_sleep_timeout_);
     }
@@ -117,6 +135,9 @@ namespace esphome
         result.standby_changed |= state.set_standby_countdown(update.data.standby_countdown);
         state.requested_volume = update.data.volume;
         result.mute_changed |= state.set_mute(update.data.mute);
+        state.logo_brightness = update.data.logo_brightness;
+        state.auto_standby_time = update.data.auto_standby_time;
+        state.auto_standby_enabled = update.data.auto_standby_enabled;
       }
       return result;
     }
@@ -126,8 +147,13 @@ namespace esphome
       DeviceState *state = representative_state_();
       if (force || changed.is_up_changed)
         display::update_speaker_dots(this->tft_, network::get_device_states());
-      if (state != nullptr && (force || changed.standby_changed))
+      // The countdown is polled from the speaker every cycle; redraw it at least once a minute even if unchanged
+      const uint32_t now = millis();
+      if (state != nullptr && (force || changed.standby_changed || now - last_standby_draw_ >= 60000))
+      {
         display::update_standby_time(this->tft_, state->standby_countdown);
+        last_standby_draw_ = now;
+      }
       display::update_datetime(this->tft_, utils::get_datetime_string());
       display::update_volume_display(this->tft_, state != nullptr ? state->requested_volume : -1.0f);
       if (state != nullptr && state->muted)
@@ -181,13 +207,37 @@ namespace esphome
     {
       uint32_t now = millis();
 
-      // Open the menu as soon as the button has been held long enough, not only when it is released
+      // Clicks counted by the encoder interrupt handler since the last loop
+      int32_t detents;
+      {
+        InterruptLock lock;
+        detents = this->encoder_.detents;
+        this->encoder_.detents = 0;
+      }
+      if (detents != 0)
+        process_encoder_change(detents);
+
+      // Act on a long press as soon as the button has been held long enough, not only when it is released:
+      // open the menu, or close it again when it is already open
       if (button_down_ && !long_press_handled_ && now - button_press_time_ > LONG_PRESS_MS)
       {
         long_press_handled_ = true;
         ESP_LOGI(TAG, "Long press detected");
-        if (!in_menu_)
-          enter_menu();
+        if (!editor_.active)  // an editor is saved by the release, see button_released()
+        {
+          if (in_menu_)
+            exit_menu();
+          else
+            enter_menu();
+        }
+      }
+
+      // Switch the screen off after a while without input
+      if (display_timeout_ > 0 && !display_off_ && !button_down_ && now - last_interaction_ > display_timeout_ * 1000UL)
+      {
+        display_off_ = true;
+        if (backlight_pin_ != nullptr)
+          backlight_pin_->set_level(0.0f);
       }
 
       // This loop already runs while WiFi is still connecting (see get_setup_priority), so the screen comes up
@@ -217,7 +267,14 @@ namespace esphome
 
       // The menu owns the screen; state keeps updating underneath and update_whole_screen() catches up on exit
       if (in_menu_)
+      {
+        if (!editor_.active && now - last_menu_refresh_ > 500)
+        {
+          last_menu_refresh_ = now;
+          refresh_menu_values_();
+        }
         return;
+      }
 
       // Redraw when speaker data arrived, plus periodically for the clock and the status icons
       bool got_data = changed.received || force_redraw_;
@@ -231,13 +288,14 @@ namespace esphome
 
     void VolCtrl::save_settings_()
     {
-      Settings settings{this->backlight_level_, this->deep_sleep_timeout_};
+      Settings settings{SETTINGS_VERSION,        this->backlight_level_, this->deep_sleep_timeout_,
+                        this->max_volume_,       this->volume_step_,     this->display_timeout_};
       this->settings_pref_.save(&settings);
     }
 
     void VolCtrl::apply_brightness_()
     {
-      if (this->backlight_pin_ != nullptr)
+      if (this->backlight_pin_ != nullptr && !this->display_off_)
         this->backlight_pin_->set_level(this->backlight_level_ / 100.0f);
     }
 
@@ -307,36 +365,6 @@ namespace esphome
       esp_deep_sleep_start();
     }
 
-    // Menu editors for the volume settings submenu (rows: 0 back, 1 step, 2 backlight, 3 display timeout, 4 deep sleep)
-    void VolCtrl::draw_volume_settings_values_()
-    {
-      display::draw_menu_value(this->tft_, 2, std::to_string(this->backlight_level_) + "%");
-      display::draw_menu_value(this->tft_, 4,
-                               this->deep_sleep_timeout_ > 0 ? std::to_string(this->deep_sleep_timeout_ / 60) + " min" : "off");
-    }
-
-    void VolCtrl::cycle_deep_sleep_timeout_()
-    {
-      static const int values[] = {300, 600, 900, 1800, 0};  // seconds, 0 = off
-      int next = 0;
-      for (size_t i = 0; i < sizeof(values) / sizeof(values[0]); i++)
-      {
-        if (values[i] == this->deep_sleep_timeout_)
-        {
-          next = (i + 1) % (sizeof(values) / sizeof(values[0]));
-          break;
-        }
-      }
-      set_deep_sleep_timeout(values[next]);
-    }
-
-    void VolCtrl::exit_brightness_adjustment()
-    {
-      this->adjusting_brightness_ = false;
-      display::draw_menu_screen(this->tft_, menu_level_, menu_position_, menu_items_count_);
-      draw_volume_settings_values_();
-    }
-
     void VolCtrl::update_whole_screen()
     {
       this->tft_->fillScreen(TFT_BLACK);
@@ -358,6 +386,7 @@ namespace esphome
 
     void VolCtrl::button_pressed()
     {
+      note_interaction_();
       button_press_time_ = millis();
       button_down_ = true;
       long_press_handled_ = false;
@@ -366,26 +395,36 @@ namespace esphome
     void VolCtrl::button_released()
     {
       button_down_ = false;
-      if (adjusting_brightness_)
+      if (editor_.active)
       {
-        exit_brightness_adjustment();
+        // Pressing saves the value being edited
+        if (editor_.done)
+          editor_.done();
+        close_editor_();
         return;
       }
       if (long_press_handled_)
-        return;  // loop() already acted on the long press (opened the menu)
-      toggle_mute();  // short press: mute, or select in the menu
+        return;  // loop() already acted on the long press (opened or closed the menu)
+      if (in_menu_)
+      {
+        menu_select_();
+        return;
+      }
+      short_press_action_();
+    }
+
+    // Short press outside the menu: play/pause when a WiiM is configured (the common thing to do while listening),
+    // otherwise mute.
+    void VolCtrl::short_press_action_()
+    {
+      if (this->wiim_enabled_)
+        wiim::toggle_play();
+      else
+        toggle_mute();
     }
 
     void VolCtrl::toggle_mute()
     {
-      // If we're in menu mode, use this as a select button
-      if (in_menu_)
-      {
-        ESP_LOGI(TAG, "Button pressed in menu - selecting item");
-        menu_select();
-        return;
-      }
-
       // One target for all speakers: mute unless every reachable speaker is already muted
       bool any_unmuted = false;
       for (auto &entry : network::get_device_states())
@@ -428,180 +467,6 @@ namespace esphome
       return state != nullptr && state->muted;
     }
 
-    void VolCtrl::enter_menu()
-    {
-      uint32_t now = millis();
-
-      if (!in_menu_)
-      {
-        ESP_LOGI(TAG, "Entering menu");
-        in_menu_ = true;
-        menu_level_ = 0;
-        menu_position_ = 0;
-        menu_items_count_ = 7; // Number of items in main menu
-
-        // Draw the menu
-        display::draw_menu_screen(this->tft_, menu_level_, menu_position_, menu_items_count_);
-      }
-    }
-
-    void VolCtrl::exit_menu()
-    {
-      if (in_menu_)
-      {
-        ESP_LOGI(TAG, "Exiting menu");
-        in_menu_ = false;
-        menu_level_ = 0;
-        menu_position_ = 0;
-
-        // Force a full redraw when exiting menu
-        update_whole_screen();
-      }
-    }
-
-    void VolCtrl::menu_up()
-    {
-      if (in_menu_)
-      {
-        int prev_position = menu_position_;
-        menu_position_--;
-        if (menu_position_ < 0)
-        {
-          menu_position_ = menu_items_count_ - 1;
-        }
-
-        // Update the menu display
-        display::draw_menu_item_highlight(this->tft_, menu_position_, prev_position);
-      }
-    }
-
-    void VolCtrl::menu_down()
-    {
-      if (in_menu_)
-      {
-        int prev_position = menu_position_;
-        menu_position_++;
-        if (menu_position_ >= menu_items_count_)
-        {
-          menu_position_ = 0;
-        }
-
-        // Update the menu display
-        display::draw_menu_item_highlight(this->tft_, menu_position_, prev_position);
-      }
-    }
-
-    void VolCtrl::menu_select()
-    {
-      if (in_menu_)
-      {
-        ESP_LOGI(TAG, "Selected menu item %d", menu_position_);
-
-        switch (menu_level_)
-        {
-        case 0: // Main menu
-          if (menu_position_ == 0)
-          {
-            // Exit menu
-            exit_menu();
-            return;
-          }
-          else if (menu_position_ == 1)
-          {
-            // Show devices
-            // TODO: Implement device listing screen
-          }
-          else if (menu_position_ == 2)
-          {
-            // Show settings
-            // TODO: Implement settings screen
-          }
-          else if (menu_position_ == 3)
-          {
-            // Parametric EQ submenu
-            menu_level_ = 1; // Enter EQ submenu
-            menu_position_ = 0;
-            menu_items_count_ = 4;
-          }
-          else if (menu_position_ == 4)
-          {
-            // Discover devices
-            // This needs to trigger a new network discovery
-            // TODO: Implement discovery trigger
-          }
-          else if (menu_position_ == 5)
-          {
-            // Speaker parameters submenu
-            menu_level_ = 1; // Enter speaker parameters submenu
-            menu_position_ = 0;
-            menu_items_count_ = 6;
-          }
-          else if (menu_position_ == 6)
-          {
-            // Volume settings submenu
-            menu_level_ = 1; // Enter volume settings submenu
-            menu_position_ = 0;
-            menu_items_count_ = 5;
-            // TODO: volume step and display timeout items
-          }
-          break;
-
-        case 1: // EQ submenu
-          if (menu_position_ == 0)
-          {
-            // Back to main menu
-            menu_level_ = 0;
-            menu_position_ = 0;
-            menu_items_count_ = 7;
-          }
-          else if (menu_items_count_ == 5)
-          {
-            // Volume settings submenu
-            if (menu_position_ == 2)
-            {
-              ESP_LOGI(TAG, "Entering brightness adjustment");
-              adjusting_brightness_ = true;
-              display::draw_brightness_adjustment_screen(this->tft_, backlight_level_);
-              return;
-            }
-            else if (menu_position_ == 4)
-            {
-              cycle_deep_sleep_timeout_();
-            }
-          }
-          // TODO: Implement other EQ submenu items
-          break;
-
-        case 2: // Speaker parameters submenu
-          if (menu_position_ == 0)
-          {
-            // Back to main menu
-            menu_level_ = 0;
-            menu_position_ = 0;
-            menu_items_count_ = 7;
-          }
-          // TODO: Implement other speaker parameters submenu items
-          break;
-
-        case 3: // Volume settings submenu
-          if (menu_position_ == 0)
-          {
-            // Back to main menu
-            menu_level_ = 0;
-            menu_position_ = 0;
-            menu_items_count_ = 7;
-          }
-          // TODO: Implement other volume settings submenu items
-          break;
-        }
-        ESP_LOGI("vol_ctrl", "Menu: level=%d, position=%d, items=%d", menu_level_, menu_position_, menu_items_count_);
-        // Redraw the menu screen
-        esphome::vol_ctrl::display::draw_menu_screen(this->tft_, menu_level_, menu_position_, menu_items_count_);
-        if (menu_level_ == 1 && menu_items_count_ == 5)
-          draw_volume_settings_values_();
-      }
-    }
-
     void VolCtrl::step_volume_(float diff)
     {
       bool first = true;
@@ -626,6 +491,7 @@ namespace esphome
     {
       if (in_menu_)
         return; // the menu owns the screen and the knob
+      note_interaction_();
       ESP_LOGI(TAG, "Setting volume from Home Assistant to %.1f", level);
       if (!(level >= 0.0f)) // also rejects NaN
         return;
@@ -654,31 +520,74 @@ namespace esphome
     {
       if (diff == 0)
         return;
+      note_interaction_();
 
-      if (adjusting_brightness_)
+      if (editor_.active)
       {
-        int before = backlight_level_;
-        int target = std::min(std::max(before + diff * 5, MIN_BRIGHTNESS), 100);
-        if (target != before)
+        int value = std::min(std::max(editor_.value + diff * editor_.step, editor_.min), editor_.max);
+        if (value != editor_.value)
         {
-          set_display_brightness(target);
-          display::draw_brightness_adjustment_screen(this->tft_, backlight_level_);
+          editor_.value = value;
+          if (editor_.apply)
+            editor_.apply(value);
+          display::draw_editor_screen(this->tft_, editor_.title, editor_.format(value),
+                                      static_cast<float>(value - editor_.min) / (editor_.max - editor_.min));
         }
         return;
       }
 
       if (in_menu_)
       {
-        // Use encoder for menu navigation
-        if (diff > 0)
-          menu_down();
-        else
-          menu_up();
+        menu_move_(diff);
         return;
       }
 
       ESP_LOGD(TAG, "Encoder diff %d", diff);
-      step_volume_(static_cast<float>(diff));
+      step_volume_(diff * volume_step_);
+    }
+
+    // index = (previous << 2) | current, state = (A << 1) | B; clockwise cycle: 10 -> 11 -> 01 -> 00.
+    // In DRAM: it is read from an interrupt handler.
+#ifndef DRAM_ATTR
+#define DRAM_ATTR
+#endif
+    static const int8_t DRAM_ATTR STEP[16] = {0, -1, +1, 0, +1, 0, 0, -1, -1, 0, 0, +1, 0, +1, -1, 0};
+
+    // The interrupt handler of both encoder pins. A detent is four quarter steps in one direction; steps that go
+    // back and forth (contact bounce) cancel out in `acc`, and a skipped step resets it.
+    void IRAM_ATTR HOT VolCtrl::EncoderStore::gpio_intr(EncoderStore *arg)
+    {
+      const uint8_t current = (arg->pin_a.digital_read() ? 2 : 0) | (arg->pin_b.digital_read() ? 1 : 0);
+      if (current == arg->prev)
+        return;
+      const int8_t step = STEP[(arg->prev << 2) | current];
+      arg->prev = current;
+      if (step == 0)
+      {
+        arg->acc = 0;  // skipped a step: resynchronise
+        return;
+      }
+      arg->acc += step;
+      if (arg->acc >= 4)
+      {
+        arg->detents = arg->detents + 1;
+        arg->acc = 0;
+      }
+      else if (arg->acc <= -4)
+      {
+        arg->detents = arg->detents - 1;
+        arg->acc = 0;
+      }
+    }
+
+    void VolCtrl::note_interaction_()
+    {
+      last_interaction_ = millis();
+      if (display_off_)
+      {
+        display_off_ = false;
+        apply_brightness_();
+      }
     }
 
   } // namespace vol_ctrl

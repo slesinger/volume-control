@@ -18,9 +18,9 @@ Found by code inspection (not hardware-tested). Ordered by priority. Mark `[x]` 
 
 ## Menu / UI
 
-- [ ] **12. Menu levels 2 and 3 are unreachable.** All submenus set `menu_level_ = 1`; the switch cases `2`/`3` in `menu_select` are dead and the renderer disambiguates by `menu_items_count_` (4/6/7). Introduce a submenu id / data-driven menu.
-- [ ] **13. Item counts don't match rendered items**: EQ submenu count 4 but 3 rows drawn, speaker params 6 vs 5 rows, volume settings 7 vs 5 rows → highlight can land on nothing. "Deep sleep timeout" is drawn at y=90, overlapping "Backlight intensity".
-- [ ] **14. Menu dot Y positions** (`52 + 20*i` clear vs `58 + 20*i` draw) are magic numbers duplicated from text rows (`50 + 20*i`); derive from one `MENU_ROW_Y(i)`.
+- [x] **12. Menu levels 2 and 3 are unreachable.** (fixed on `port-master-ideas`: data-driven menu in `menu.cpp`) All submenus set `menu_level_ = 1`; the switch cases `2`/`3` in `menu_select` are dead and the renderer disambiguates by `menu_items_count_` (4/6/7). Introduce a submenu id / data-driven menu.
+- [x] **13. Item counts don't match rendered items**: EQ submenu count 4 but 3 rows drawn, speaker params 6 vs 5 rows, volume settings 7 vs 5 rows → highlight can land on nothing. "Deep sleep timeout" is drawn at y=90, overlapping "Backlight intensity".
+- [x] **14. Menu dot Y positions** (`52 + 20*i` clear vs `58 + 20*i` draw) are magic numbers duplicated from text rows (`50 + 20*i`); derive from one `MENU_ROW_Y(i)`.
 - [ ] **15. Button behaviour differs from spec**: README says long-press = 1 s and "volume 0 toggles mute"; code uses 300 ms and does not implement the volume-0 rule. Pick one and update README.
 - [ ] **16. Rate limit from spec is not implemented**: README says commands are sent at most once per second; `last_volume_change_` is written but never read. (Current behaviour — send on every tick — works well per the latest commit, so update the README rather than add a limit; but do coalesce, see ROADMAP.)
 - [ ] **17. Datetime region** `{240, 0, 100, …}` relies on TR_DATUM and is never cleared except by overdraw with background colour; a shorter string can leave artefacts. Datum is reset to `MC_DATUM` only inside `update_datetime`; other draw functions assume it silently.

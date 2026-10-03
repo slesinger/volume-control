@@ -17,6 +17,10 @@ namespace esphome
       bool muted = false;
       // float volume = -1.0f;  // -1.0f indicates volume not set
       int standby_countdown = -1;
+      // Speaker parameters, -1 = not reported
+      int logo_brightness = -1;
+      int auto_standby_time = -1;     // minutes
+      int auto_standby_enabled = -1;  // 0 / 1
 
       bool set_is_up(bool new_is_up);
       float get_requested_volume() const;
