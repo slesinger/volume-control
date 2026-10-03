@@ -17,6 +17,7 @@ struct Status {
   bool playing = false;
   std::string title;
   std::string artist;
+  std::string album;
 };
 
 // ip: address of the WiiM; empty = find it via SSDP. Call once before start().

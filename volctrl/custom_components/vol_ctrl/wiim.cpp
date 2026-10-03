@@ -170,8 +170,10 @@ bool poll(const std::string &host) {
   if (next.playing && http_get(host, "/httpapi.asp?command=getMetaInfo", body)) {
     json_string(body, "title", next.title);
     json_string(body, "artist", next.artist);
+    json_string(body, "album", next.album);
     if (next.title == "unknow") next.title.clear();
     if (next.artist == "unknow") next.artist.clear();
+    if (next.album == "unknow") next.album.clear();
   }
 
   std::lock_guard<std::mutex> lock(mtx);

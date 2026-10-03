@@ -31,7 +31,7 @@ namespace esphome
       this->tft_ = new TFT_eSPI();
       this->tft_->init();
       this->tft_->setRotation(0);
-      this->tft_->fillScreen(TFT_BLACK);
+      display::clear_screen(this->tft_);
       // Nothing is drawn here: loop() draws the first frame, and it runs even while WiFi is still connecting
 
       // After a wake-up from deep sleep the backlight pin is still latched low (see deep_sleep())
@@ -176,16 +176,23 @@ namespace esphome
       {
         message = "Finding speakers";
       }
-      else if (this->wiim_enabled_)
+      std::string above, below;
+      if (this->wiim_enabled_ && wifi_connected && !speakers_pending)
       {
         wiim::Status wiim_status = wiim::get_status();
         if (wiim_status.available && !wiim_status.input.empty())
         {
           message = wiim_status.input;
-          if (wiim_status.playing && !wiim_status.title.empty())
-            message += ": " + (wiim_status.artist.empty() ? wiim_status.title : wiim_status.artist + " - " + wiim_status.title);
+          if (wiim_status.playing)
+          {
+            above = wiim_status.artist;
+            if (!wiim_status.album.empty())
+              above += above.empty() ? wiim_status.album : " / " + wiim_status.album;
+            below = wiim_status.title;
+          }
         }
       }
+      display::update_track_info(this->tft_, above, below);
       display::update_status_message(this->tft_, message);
 
       if (this->wiim_enabled_)
@@ -344,7 +351,7 @@ namespace esphome
       ESP_LOGI(TAG, "Entering deep sleep, press the encoder button to wake up");
       if (this->tft_ != nullptr)
       {
-        this->tft_->fillScreen(TFT_BLACK);
+        display::clear_screen(this->tft_);
         this->tft_->writecommand(0x10);  // ST7789 SLPIN
       }
       // Backlight really off: with PWM at 0 the output would still sit at min_power (see yaml), and a pin left to
@@ -368,7 +375,7 @@ namespace esphome
 
     void VolCtrl::update_whole_screen()
     {
-      this->tft_->fillScreen(TFT_BLACK);
+      display::clear_screen(this->tft_);
       draw_status_(PollResult{}, true);
       pending_changes_ = PollResult{};
       last_draw_ = millis();
