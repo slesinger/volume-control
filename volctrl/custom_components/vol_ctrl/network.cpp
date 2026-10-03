@@ -6,7 +6,12 @@
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
+#include <atomic>
 #include <cstring>
+#include <mutex>
+#include <vector>
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
 #include <cerrno>
 #include <fcntl.h>
 #include <sys/select.h>
@@ -139,63 +144,190 @@ bool send_ssc_command(const std::string &ipv6, const std::string &command, std::
   return true;
 }
 
+namespace {
+
+// Speaker as seen by the worker task. Pending-write fields and bookkeeping are guarded by `mtx`.
+struct Link {
+  std::string ipv6;
+  bool has_volume = false;
+  float volume = 0.0f;
+  bool has_mute = false;
+  bool mute = false;
+  uint32_t write_epoch = 0;   // bumped on every request, used to discard polls that raced with a write
+  uint32_t last_write_ms = 0;
+  uint32_t next_poll_ms = 0;
+};
+
+constexpr uint32_t POLL_INTERVAL_UP_MS = 1500;
+constexpr uint32_t POLL_INTERVAL_DOWN_MS = 5000;  // back off from unreachable speakers (each attempt costs a connect timeout)
+constexpr uint32_t QUIET_AFTER_WRITE_MS = 400;    // let the speaker settle before reading its state back
+
+std::vector<Link> links;  // filled before start(), never resized afterwards
+std::vector<PollUpdate> updates;
+std::mutex mtx;
+TaskHandle_t worker = nullptr;
+std::atomic<bool> online{false};
+
+Link *find_link(const std::string &ipv6) {
+  for (auto &l : links)
+    if (l.ipv6 == ipv6) return &l;
+  return nullptr;
+}
+
+// Blocking: only call from the worker task.
+bool get_device_data_blocking(const std::string &ipv6, DeviceVolStdbyData &data) {
+  std::string response;
+  if (!send_ssc_command(
+          ipv6, "{\"device\":{\"standby\":{\"countdown\":null}},\"audio\":{\"out\":{\"level\":null,\"mute\":null}}}",
+          response))
+    return false;
+
+  float level = 0.0f;
+  float countdown = 0.0f;
+  bool mute = false;
+  bool ok = true;
+  ok &= utils::extract_json_number(response, "level", level);
+  ok &= utils::extract_json_number(response, "countdown", countdown);
+  ok &= utils::check_json_boolean(response, "mute", mute);
+  if (!ok) return false;
+  data.volume = level;
+  data.standby_countdown = static_cast<int>(countdown);
+  data.mute = mute;
+  return true;
+}
+
+bool send_volume_blocking(const std::string &ipv6, float volume) {
+  std::string response;
+  std::string command = "{\"audio\":{\"out\":{\"level\":" + std::to_string(volume) + "}}}";
+  if (send_ssc_command(ipv6, command, response)) return true;
+  ESP_LOGW(TAG, "Failed to set volume for device %s", ipv6.c_str());
+  return false;
+}
+
+bool send_mute_blocking(const std::string &ipv6, bool mute) {
+  std::string response;
+  std::string command = "{\"audio\":{\"out\":{\"mute\":" + std::string(mute ? "true" : "false") + "}}}";
+  if (send_ssc_command(ipv6, command, response)) return true;
+  ESP_LOGW(TAG, "Failed to %s device %s", mute ? "mute" : "unmute", ipv6.c_str());
+  return false;
+}
+
+bool time_reached(uint32_t now, uint32_t deadline) { return static_cast<int32_t>(now - deadline) >= 0; }
+
+void worker_task(void *) {
+  for (;;) {
+    // Woken by request_*(), otherwise tick often enough to notice due polls
+    ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(50));
+    if (!online.load()) continue;
+
+    // 1) Writes first, for every speaker, so a slow poll never delays the knob
+    for (auto &l : links) {
+      bool has_volume, has_mute, mute;
+      float volume;
+      {
+        std::lock_guard<std::mutex> lock(mtx);
+        has_volume = l.has_volume;
+        volume = l.volume;
+        has_mute = l.has_mute;
+        mute = l.mute;
+        l.has_volume = l.has_mute = false;
+        if (has_volume || has_mute) l.last_write_ms = millis();
+      }
+      bool ok = true;
+      if (has_mute) ok &= send_mute_blocking(l.ipv6, mute);
+      if (has_volume) ok &= send_volume_blocking(l.ipv6, volume);
+      if (!ok) {
+        std::lock_guard<std::mutex> lock(mtx);
+        l.next_poll_ms = millis();  // resync UI with the real speaker state
+      }
+    }
+
+    // 2) At most one poll per iteration, so writes queued meanwhile wait for one poll only
+    for (auto &l : links) {
+      uint32_t now = millis();
+      uint32_t epoch;
+      {
+        std::lock_guard<std::mutex> lock(mtx);
+        bool due = time_reached(now, l.next_poll_ms) && !l.has_volume && !l.has_mute &&
+                   (l.last_write_ms == 0 || now - l.last_write_ms >= QUIET_AFTER_WRITE_MS);
+        if (!due) continue;
+        epoch = l.write_epoch;
+      }
+
+      PollUpdate update;
+      update.ipv6 = l.ipv6;
+      update.is_up = get_device_data_blocking(l.ipv6, update.data);
+
+      std::lock_guard<std::mutex> lock(mtx);
+      if (epoch != l.write_epoch) {
+        l.next_poll_ms = millis() + 100;  // a write happened meanwhile, the reading is stale
+      } else {
+        l.next_poll_ms = millis() + (update.is_up ? POLL_INTERVAL_UP_MS : POLL_INTERVAL_DOWN_MS);
+        bool replaced = false;
+        for (auto &u : updates) {
+          if (u.ipv6 == update.ipv6) {
+            u = update;
+            replaced = true;
+          }
+        }
+        if (!replaced) updates.push_back(update);
+      }
+      break;
+    }
+  }
+}
+
+}  // namespace
+
 void register_device(const std::string &name, const std::string &ipv6) {
   device_map[name] = ipv6;
   device_states[ipv6] = DeviceState();
+  Link link;
+  link.ipv6 = ipv6;
+  links.push_back(link);
+}
+
+void start() {
+  if (worker != nullptr) return;
+  xTaskCreate(worker_task, "vol_net", 8192, nullptr, 1, &worker);
+}
+
+void set_online(bool value) { online.store(value); }
+
+void request_volume(const std::string &ipv6, float volume) {
+  Link *l = find_link(ipv6);
+  if (l == nullptr) return;
+  {
+    std::lock_guard<std::mutex> lock(mtx);
+    l->has_volume = true;
+    l->volume = volume;
+    l->write_epoch++;
+  }
+  if (worker != nullptr) xTaskNotifyGive(worker);
+}
+
+void request_mute(const std::string &ipv6, bool mute) {
+  Link *l = find_link(ipv6);
+  if (l == nullptr) return;
+  {
+    std::lock_guard<std::mutex> lock(mtx);
+    l->has_mute = true;
+    l->mute = mute;
+    l->write_epoch++;
+  }
+  if (worker != nullptr) xTaskNotifyGive(worker);
+}
+
+bool take_updates(std::vector<PollUpdate> &out) {
+  std::lock_guard<std::mutex> lock(mtx);
+  if (updates.empty()) return false;
+  out.swap(updates);
+  updates.clear();
+  return true;
 }
 
 std::map<std::string, DeviceState>& get_device_states() {
   return device_states;
-}
-
-// Return value indicates whether speaker is up or down, while data struct carrye volume, mute and standby-countdown
-bool get_device_data(const std::string &ipv6, DeviceVolStdbyData &data) {
-  std::string response;
-  bool success = send_ssc_command(
-    ipv6, 
-    "{\"device\":{\"standby\":{\"countdown\":null}},\"audio\":{\"out\":{\"level\":null,\"mute\":null}}}",
-    response);
-  
-  if (success) {
-    float level = 0.0f;
-    float countdown = 0.0f;
-    bool mute = false;
-    bool ok = true;
-    ok &= utils::extract_json_number(response, "level", level);
-    ok &= utils::extract_json_number(response, "countdown", countdown);
-    ok &= utils::check_json_boolean(response, "mute", mute);
-    if (ok) {
-      data.volume = level;
-      data.standby_countdown = static_cast<int>(countdown);
-      data.mute = mute;
-      return true;
-    }
-  }
-  return false;
-}
-
-bool set_device_volume(const std::string &ipv6, float volume) {
-  std::string command = "{\"audio\":{\"out\":{\"level\":" + std::to_string(volume) + "}}}";
-  std::string response;
-  if (network::send_ssc_command(ipv6, command, response)) {
-    // ESP_LOGI(TAG, "Successfully set volume to %.1f for device %s, response: %s", volume, ipv6.c_str(), response.c_str());
-    return true;
-  } else {
-    ESP_LOGE(TAG, "Failed to set volume for device %s - network error", ipv6.c_str());
-    return false;
-  }
-}
-
-bool set_device_mute(const std::string &ipv6, bool mute) {
-  std::string command = "{\"audio\":{\"out\":{\"mute\":" + std::string(mute ? "true" : "false") + "}}}";
-  std::string response;
-  if (network::send_ssc_command(ipv6, command, response)) {
-    ESP_LOGI(TAG, "Successfully %s device %s, response: %s", mute ? "muted" : "unmuted", ipv6.c_str(), response.c_str());
-    return true;
-  } else {
-    ESP_LOGE(TAG, "Failed to %s device %s - network error", mute ? "mute" : "unmute", ipv6.c_str());
-    return false;
-  }
 }
 
 void log_ipv6_addresses() {

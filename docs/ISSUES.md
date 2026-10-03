@@ -4,7 +4,7 @@ Found by code inspection (not hardware-tested). Ordered by priority. Mark `[x]` 
 
 ## Correctness / stability
 
-- [ ] **1. (partly fixed: connect now has a 300 ms select timeout, recv 500 ms; calls are still synchronous) Blocking network I/O in the main loop** (`network.cpp: send_ssc_command`). `connect()` has no timeout (SO_SNDTIMEO doesn't bound connect on lwIP), recv/send timeouts are 1 s, and each speaker is polled sequentially, so one powered-off speaker can stall `loop()` for seconds → watchdog resets, laggy encoder. Fix: non-blocking connect with `select` timeout (~200 ms), or a FreeRTOS task that does network I/O and publishes state via a queue/mutex.
+- [x] **1. Blocking network I/O in the main loop** (`network.cpp: send_ssc_command`). `connect()` has no timeout (SO_SNDTIMEO doesn't bound connect on lwIP), recv/send timeouts are 1 s, and each speaker is polled sequentially, so one powered-off speaker can stall `loop()` for seconds → watchdog resets, laggy encoder. Fix: non-blocking connect with `select` timeout (~200 ms), or a FreeRTOS task that does network I/O and publishes state via a queue/mutex.
 - [x] **2. Null dereference with no devices** (`vol_ctrl.cpp:127` `last_state->requested_volume`, and `update_whole_screen()` uses `last_state` unguarded at every call). Crashes if no device is registered.
 - [x] **3. Change flags overwritten, not OR-ed** (`vol_ctrl.cpp:113,115`): `standby_countdown_changed = …` / `mute_changed = …` only reflect the last speaker; `is_up_changed |=` is correct. Use `|=` everywhere.
 - [x] **4. Single `recv()` for the reply** (`network.cpp`). TCP may deliver partial data and replies end in CRLF; larger replies (EQ queries) exceed the 512-byte buffer. Read until `\r\n` / buffer full.
@@ -49,3 +49,5 @@ Found by code inspection (not hardware-tested). Ordered by priority. Mark `[x]` 
 - Polling is skipped while the menu is open; HA volume services are ignored in the menu.
 - `max_volume` option (yaml: 100 dB) caps every volume sent.
 - Fixed off-by-one in `extract_json_value`; removed duplicated `utils/json.*`, `utils/datetime.*`.
+
+- Branch `async`: all socket I/O moved to a FreeRTOS worker task (`network.cpp`). Writes are coalesced (latest volume/mute per speaker), polls back off to 5 s for unreachable speakers, and polls that race with a write are discarded. `loop()` and the encoder/button callbacks no longer touch the network.

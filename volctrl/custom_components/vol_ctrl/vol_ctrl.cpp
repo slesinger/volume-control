@@ -36,9 +36,7 @@ namespace esphome
 
       // Initialize network subsystem
       network::init();
-
-      // Force an immediate device check
-      last_device_check_ = millis() - 5000;
+      network::start();
 
       // Add a small delay to let things settle
       esphome::delay(500);
@@ -70,25 +68,31 @@ namespace esphome
       return device_states.empty() ? nullptr : &device_states.begin()->second;
     }
 
-    VolCtrl::PollResult VolCtrl::poll_devices_()
+    VolCtrl::PollResult VolCtrl::apply_poll_updates_()
     {
       PollResult result;
-      for (auto &entry : network::get_device_states())
+      std::vector<network::PollUpdate> updates;
+      if (!network::take_updates(updates))
+        return result;
+
+      result.received = true;
+      auto &device_states = network::get_device_states();
+      for (const auto &update : updates)
       {
-        const std::string &ipv6 = entry.first;
-        DeviceState &state = entry.second;
-        network::DeviceVolStdbyData data;
-        bool is_up = network::get_device_data(ipv6, data);
-        if (state.set_is_up(is_up))
+        auto it = device_states.find(update.ipv6);
+        if (it == device_states.end())
+          continue;
+        DeviceState &state = it->second;
+        if (state.set_is_up(update.is_up))
         {
           result.is_up_changed = true;
-          ESP_LOGI(TAG, "Speaker %s is %s", ipv6.c_str(), is_up ? "reachable" : "unreachable");
+          ESP_LOGI(TAG, "Speaker %s is %s", update.ipv6.c_str(), update.is_up ? "reachable" : "unreachable");
         }
-        if (!is_up)
+        if (!update.is_up)
           continue; // keep the last known values instead of overwriting them with defaults
-        result.standby_changed |= state.set_standby_countdown(data.standby_countdown);
-        state.requested_volume = data.volume;
-        result.mute_changed |= state.set_mute(data.mute);
+        result.standby_changed |= state.set_standby_countdown(update.data.standby_countdown);
+        state.requested_volume = update.data.volume;
+        result.mute_changed |= state.set_mute(update.data.mute);
       }
       return result;
     }
@@ -111,12 +115,15 @@ namespace esphome
     }
 
     // Everything runs in ESPHome's cooperative loop, so loop() must return quickly or the watchdog resets the chip.
+    // Network I/O is done by the worker task in network.cpp; this only consumes its results.
     // Encoder and button events arrive via the callbacks below (see yaml).
     void VolCtrl::loop()
     {
       uint32_t now = millis();
+      const bool wifi_connected = wifi::global_wifi_component->is_connected();
+      network::set_online(wifi_connected);
 
-      if (!wifi::global_wifi_component->is_connected())
+      if (!wifi_connected)
       {
         if (now - last_wifi_draw_ > 1000)
         {
@@ -127,35 +134,41 @@ namespace esphome
         return;
       }
 
-      if (now - this->last_device_check_ <= 1500)
-        return;
-      this->last_device_check_ = now;
+      PollResult changed = apply_poll_updates_();
+      pending_changes_.is_up_changed |= changed.is_up_changed;
+      pending_changes_.standby_changed |= changed.standby_changed;
+      pending_changes_.mute_changed |= changed.mute_changed;
 
-      // The menu owns the screen and polling would only add latency to navigation
+      // The menu owns the screen; state keeps updating underneath and update_whole_screen() catches up on exit
       if (in_menu_)
         return;
 
-      PollResult changed = poll_devices_();
-      draw_status_(changed, force_redraw_);
+      // Redraw when speaker data arrived, plus periodically for the clock and WiFi icon
+      bool got_data = changed.received || force_redraw_;
+      if (!got_data && now - last_draw_ <= 1500)
+        return;
+      last_draw_ = now;
+      draw_status_(pending_changes_, force_redraw_);
+      pending_changes_ = PollResult{};
       force_redraw_ = false;
     } // end of loop()
 
     void VolCtrl::update_whole_screen()
     {
-      poll_devices_();
       this->tft_->fillScreen(TFT_BLACK);
       draw_status_(PollResult{}, true);
+      pending_changes_ = PollResult{};
+      last_draw_ = millis();
     }
 
-    // Clamp and send a volume to one speaker; the state is only updated when the speaker accepted it.
+    // Clamp and queue a volume for one speaker; never blocks.
     bool VolCtrl::apply_volume_(const std::string &ipv6, DeviceState &state, float volume)
     {
       if (!state.is_up)
         return false;
       volume = clamp_volume_(volume);
-      if (!network::set_device_volume(ipv6, volume))
-        return false;
-      state.set_requested_volume(volume);
+      network::request_volume(ipv6, volume);
+      state.set_requested_volume(volume); // the next poll confirms (or corrects) it
       return true;
     }
 
@@ -201,8 +214,10 @@ namespace esphome
 
       for (auto &entry : device_states)
       {
-        if (entry.second.is_up && network::set_device_mute(entry.first, target))
-          entry.second.set_mute(target);
+        if (!entry.second.is_up)
+          continue;
+        network::request_mute(entry.first, target);
+        entry.second.set_mute(target); // optimistic, the next poll confirms
       }
 
       DeviceState *state = representative_state_();
@@ -384,7 +399,6 @@ namespace esphome
           first = false;
         }
       }
-      this->last_device_check_ = millis(); // delay the next poll so it doesn't overwrite the blue value immediately
     }
 
     // This function is only called from Home Assistant service

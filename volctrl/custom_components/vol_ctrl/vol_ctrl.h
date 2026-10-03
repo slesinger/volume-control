@@ -54,14 +54,16 @@ class VolCtrl : public Component, public spi::SPIDevice<spi::BIT_ORDER_MSB_FIRST
     bool is_up_changed{false};
     bool standby_changed{false};
     bool mute_changed{false};
+    bool received{false}; // any poll result arrived (e.g. confirms the volume shown in blue)
   };
 
-  // Query all speakers and update their state. Failed polls only mark the speaker as down.
-  PollResult poll_devices_();
+  // Fold the background poll results into the speaker states. Failed polls only mark the speaker as down.
+  // Never blocks: all socket I/O happens on the network worker task.
+  PollResult apply_poll_updates_();
   // Speaker whose values represent the group on screen (first reachable one, else the first).
   DeviceState *representative_state_();
   float clamp_volume_(float volume) const;
-  // Clamp and send a volume to one speaker, updating its state. Skips speakers known to be down.
+  // Clamp and queue a volume for one speaker, updating its state optimistically. Skips speakers known to be down.
   bool apply_volume_(const std::string &ipv6, DeviceState &state, float volume);
   // Redraw the main screen; with force=true every region, otherwise only the regions flagged in `changed`.
   void draw_status_(const PollResult &changed, bool force);
@@ -72,7 +74,8 @@ class VolCtrl : public Component, public spi::SPIDevice<spi::BIT_ORDER_MSB_FIRST
   TFT_eSPI *tft_{nullptr};
 
   // UI state tracking
-  uint32_t last_device_check_{0};
+  uint32_t last_draw_{0};
+  PollResult pending_changes_;  // changes folded in since the last redraw
   uint32_t last_wifi_draw_{0};
   bool force_redraw_{true};  // draw everything on the first poll, e.g. dots for speakers that start offline
 

@@ -2,6 +2,7 @@
 
 #include <map>
 #include <string>
+#include <vector>
 #include "device_state.h"
 
 namespace esphome
@@ -18,17 +19,34 @@ namespace esphome
                 bool mute = false;
             };
 
-            // Network-related functions
-            bool send_ssc_command(const std::string &ipv6, const std::string &command, std::string &response);
-            // On failure `data` is left untouched, so callers must check the return value.
-            bool get_device_data(const std::string &ipv6, DeviceVolStdbyData &data);
-            bool set_device_volume(const std::string &ipv6, float volume);
-            bool set_device_mute(const std::string &ipv6, bool mute);
+            // Result of one background poll of a speaker
+            struct PollUpdate
+            {
+                std::string ipv6;
+                bool is_up = false;
+                DeviceVolStdbyData data; // only valid when is_up
+            };
 
-            // Register device for monitoring
+            // All socket I/O runs on a dedicated FreeRTOS task, so none of the calls below block the caller.
+
+            // Register device for monitoring (call before start())
             void register_device(const std::string &name, const std::string &ipv6);
 
-            // Get device state map reference (mutable: the UI layer updates state in place)
+            // Spawn the worker task. It polls every registered speaker periodically and sends queued writes.
+            void start();
+
+            // The worker idles while WiFi is down
+            void set_online(bool online);
+
+            // Queue a write. Writes are coalesced: only the latest pending volume / mute per speaker is sent.
+            void request_volume(const std::string &ipv6, float volume);
+            void request_mute(const std::string &ipv6, bool mute);
+
+            // Move the poll results gathered since the last call into `out` (latest per speaker).
+            // Returns false when there is nothing new. Results made stale by a write issued meanwhile are dropped.
+            bool take_updates(std::vector<PollUpdate> &out);
+
+            // Get device state map reference (mutable: owned and updated by the UI thread only)
             std::map<std::string, DeviceState> &get_device_states();
 
             // Initialize network subsystem
