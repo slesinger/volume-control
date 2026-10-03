@@ -184,13 +184,10 @@ namespace esphome
         if (wiim_status.available && !wiim_status.input.empty())
         {
           message = wiim_status.input;
-          if (wiim_status.playing)
-          {
-            above = wiim_status.artist;
-            if (!wiim_status.album.empty())
-              above += above.empty() ? wiim_status.album : " / " + wiim_status.album;
-            below = wiim_status.title;
-          }
+          above = wiim_status.artist;
+          if (!wiim_status.album.empty())
+            above += above.empty() ? wiim_status.album : " / " + wiim_status.album;
+          below = wiim_status.title;
         }
       }
       display::update_track_info(this->tft_, above, below);

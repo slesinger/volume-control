@@ -45,6 +45,8 @@ std::mutex mtx;
 std::string ip;
 bool enabled = false;
 Status status;
+std::string last_pos;  // play position of the previous poll (worker task only)
+int fast_polls = 0;    // quick follow-up polls after a command, so the state shows up promptly
 std::deque<Command> queue;
 std::atomic<bool> online{false};
 TaskHandle_t worker = nullptr;
@@ -166,10 +168,18 @@ bool poll(const std::string &host) {
   next.checked = true;
   std::string value;
   next.input = input_for_mode(json_string(body, "mode", value) ? atoi(value.c_str()) : 10);
-  // Some sources (Qobuz) report "none" while playing, so only an explicit pause/stop counts as not playing
-  next.playing = json_string(body, "status", value) && value != "pause" && value != "stop";
+  // Some sources (Qobuz) always report "none", so then the play position decides: it only advances while playing
+  std::string state, pos;
+  json_string(body, "status", state);
+  json_string(body, "curpos", pos);
+  if (state == "play" || state == "load") next.playing = true;
+  else if (state == "pause" || state == "stop") next.playing = false;
+  else if (fast_polls == 2 && !last_pos.empty()) next.playing = get_status().playing;  // baseline too old: keep the optimistic value
+  else next.playing = !pos.empty() && pos != "0" && pos != last_pos;
+  last_pos = pos;
 
-  if (next.playing && http_get(host, "/httpapi.asp?command=getMetaInfo", body)) {
+  // Track info stays available while paused, but only network sources have any
+  if (next.input == "Network" && http_get(host, "/httpapi.asp?command=getMetaInfo", body)) {
     json_string(body, "title", next.title);
     json_string(body, "artist", next.artist);
     json_string(body, "album", next.album);
@@ -179,7 +189,7 @@ bool poll(const std::string &host) {
     if (next.album == "unknow") next.album.clear();
   }
 
-  art::request(next.playing ? next.art_url : std::string());
+  art::request(next.art_url);
   std::lock_guard<std::mutex> lock(mtx);
   status = next;
   return true;
@@ -263,7 +273,8 @@ void worker_task(void *) {
         continue;
       }
       if (execute(host, cmd)) {
-        next_poll = millis();  // refresh input/play state right away
+        next_poll = millis() + 800;  // refresh input/play state shortly after, and once more a bit later
+        fast_polls = 2;
       } else {
         set_available(false);
         next_poll = millis() + RETRY_INTERVAL_MS;
@@ -272,7 +283,8 @@ void worker_task(void *) {
 
     if (static_cast<int32_t>(millis() - next_poll) >= 0) {
       if (poll(host)) {
-        next_poll = millis() + POLL_INTERVAL_MS;
+        next_poll = millis() + (fast_polls > 0 ? 1200 : POLL_INTERVAL_MS);
+        if (fast_polls > 0) fast_polls--;
       } else {
         set_available(false);
         next_poll = millis() + RETRY_INTERVAL_MS;
@@ -296,7 +308,13 @@ void start() {
 
 void set_online(bool value) { online.store(value); }
 
-void toggle_play() { enqueue(CommandType::TOGGLE_PLAY); }
+void toggle_play() {
+  {
+    std::lock_guard<std::mutex> lock(mtx);
+    status.playing = !status.playing;  // optimistic, the follow-up polls confirm it
+  }
+  enqueue(CommandType::TOGGLE_PLAY);
+}
 void next() { enqueue(CommandType::NEXT); }
 void previous() { enqueue(CommandType::PREVIOUS); }
 void cycle_input() { enqueue(CommandType::CYCLE_INPUT); }
