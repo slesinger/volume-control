@@ -18,16 +18,13 @@ namespace esphome
       int standby_countdown = -1;
 
       bool set_is_up(bool new_is_up);
-      float get_requested_volume();
+      float get_requested_volume() const;
       void set_requested_volume(float new_requested_volume);
       bool set_standby_countdown(int new_standby_countdown);
       // float get_volume();
       // bool set_volume(float new_volume);
-      bool set_mute(bool new_mute);    };
-
-    // Rotating symbol for UI
-    extern const char ROT_SYMBOLS[];
-    extern const int ROT_SYMBOLS_LEN;
+      bool set_mute(bool new_mute);
+    };
 
   } // namespace vol_ctrl
 } // namespace esphome

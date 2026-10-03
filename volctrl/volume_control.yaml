@@ -26,14 +26,6 @@ esphome:
       - -Isrc/esphome/components/psram
       - -Isrc/esphome/components/wifi
       - -Isrc/esphome/components/spi              # The MOST IMPORTANT one
-  on_boot:
-    priority: 800
-    then:
-      - globals.set:
-          id: last_encoder_value
-          value: '0'
-      - lambda: |-
-          id(volume_encoder).publish_state(0);
 
 esp32:
   board: lolin32
@@ -109,31 +101,22 @@ vol_ctrl:
   id: my_vol_ctrl
   spi_id: spi1
   backlight_pin: backlight_output
-
-globals:
-  - id: last_encoder_value
-    type: int
-    restore_value: no
-    initial_value: '0'
+  max_volume: 100  # dB, soft cap for every volume sent to the speakers (hardware maximum is 120)
 
 sensor:
   - platform: rotary_encoder
     id: volume_encoder
     pin_a: GPIO26
     pin_b: GPIO27
-    min_value: -200  # Allow for plenty of negative and positive movement
-    max_value: 200
     resolution: 1
-    on_value:
-      then:
-        - lambda: |-
-            int c = id(volume_encoder).state;
-            int diff = c - id(last_encoder_value);
-            ESP_LOGI("vol_ctrl", "Encoder: c=%d, last_value=%d, diff=%d", c, id(last_encoder_value), diff);
-            //if (diff != 0) {  // Only process if there's actual movement
-            id(my_vol_ctrl).process_encoder_change(diff);
-            id(last_encoder_value) = c;
-            //}
+    # The component only needs the direction of each detent, not the absolute count, so the
+    # count may wrap/saturate freely and no start-up diffing is needed.
+    min_value: -1000000
+    max_value: 1000000
+    on_clockwise:
+      - lambda: 'id(my_vol_ctrl).process_encoder_change(1);'
+    on_anticlockwise:
+      - lambda: 'id(my_vol_ctrl).process_encoder_change(-1);'
 
 binary_sensor:
   - platform: gpio

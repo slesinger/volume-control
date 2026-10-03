@@ -6,10 +6,6 @@ namespace esphome
     namespace vol_ctrl
     {
 
-        // Define the rotation symbols
-        const char ROT_SYMBOLS[] = {'|', '/', '-', '\\'};
-        const int ROT_SYMBOLS_LEN = 4;
-
         bool DeviceState::set_is_up(bool new_is_up)
         {
             if (this->is_up != new_is_up)
@@ -22,7 +18,6 @@ namespace esphome
 
         bool DeviceState::set_standby_countdown(int new_standby_countdown)
         {
-            bool standby_countdown_change = false;
             if (this->standby_countdown != new_standby_countdown)
             {
                 this->standby_countdown = new_standby_countdown;
@@ -31,7 +26,7 @@ namespace esphome
             return false;
         }
 
-        float DeviceState::get_requested_volume()
+        float DeviceState::get_requested_volume() const
         {
             return this->requested_volume;
         }

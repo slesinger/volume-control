@@ -13,7 +13,7 @@ bool extract_json_value(const std::string &json, const std::string &key, std::st
   size_t key_pos = json.find("\"" + key + "\":");
   if (key_pos == std::string::npos) return false;
   
-  size_t start_pos = key_pos + key.length() + 2; // Skip over the key and ":
+  size_t start_pos = key_pos + key.length() + 3; // Skip over "key":
   
   // Skip whitespace
   while (start_pos < json.length() && isspace(json[start_pos])) start_pos++;
@@ -62,7 +62,7 @@ bool check_json_boolean(const std::string &response, const std::string &key, boo
   }
   
   // Check if we have enough characters left
-  if (pos + 4 >= response.length()) {
+  if (pos >= response.length()) {
     ESP_LOGW(TAG, "Not enough characters after key '%s'", key.c_str());
     return false;
   }
@@ -79,8 +79,6 @@ bool check_json_boolean(const std::string &response, const std::string &key, boo
   }
   
   ESP_LOGW(TAG, "Value for key '%s' is neither 'true' nor 'false'", key.c_str());
-  return false;
-  
   return false;
 }
 

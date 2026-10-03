@@ -21,67 +21,72 @@ class VolCtrl : public Component, public spi::SPIDevice<spi::BIT_ORDER_MSB_FIRST
   // Standard ESPHome methods
   void setup() override;
   void loop() override;
+  void dump_config() override;
   
   float get_setup_priority() const override { return esphome::setup_priority::AFTER_CONNECTION; }
   void update_whole_screen();
 
   // User interface methods
-  void volume_change(const std::string &ipv6, float requested_volume);
   void button_pressed();
   void button_released();
   void toggle_mute();
   void enter_menu();
   void exit_menu();
-  
-  // Set backlight control pin
+
+  // Configuration
   void set_backlight_pin(output::FloatOutput *backlight_pin) { backlight_pin_ = backlight_pin; }
-  void set_volume_step(float step) { volume_step_ = step; }
-  
+  void set_max_volume(float max_volume) { max_volume_ = max_volume; }
+
   // Menu navigation methods
   void menu_up();
   void menu_down();
   void menu_select();
-  
-  // Direct volume setting for Home Assistant
+
+  // Home Assistant entry points. Ignored while the menu is open.
   void set_volume_from_hass(float level);
   void volume_change_from_hass(float diff);
 
-  // Process encoder changes by directly querying speakers for current volume
+  // Encoder entry point: diff is the number of detents turned (negative = counter-clockwise).
   void process_encoder_change(int diff);
 
-  // Helper for HA services
-  const std::map<std::string, DeviceState>& get_device_states() {
-    return network::get_device_states();
-  }
-
  protected:
+  struct PollResult {
+    bool is_up_changed{false};
+    bool standby_changed{false};
+    bool mute_changed{false};
+  };
+
+  // Query all speakers and update their state. Failed polls only mark the speaker as down.
+  PollResult poll_devices_();
+  // Speaker whose values represent the group on screen (first reachable one, else the first).
+  DeviceState *representative_state_();
+  float clamp_volume_(float volume) const;
+  // Clamp and send a volume to one speaker, updating its state. Skips speakers known to be down.
+  bool apply_volume_(const std::string &ipv6, DeviceState &state, float volume);
+  // Redraw the main screen; with force=true every region, otherwise only the regions flagged in `changed`.
+  void draw_status_(const PollResult &changed, bool force);
+  // Move every reachable speaker by `diff` dB, clamped to [0, max_volume_].
+  void step_volume_(float diff);
+
   // TFT display instance
   TFT_eSPI *tft_{nullptr};
-  
+
   // UI state tracking
   uint32_t last_device_check_{0};
-  uint32_t last_detail_check_{0};
-  
+  uint32_t last_wifi_draw_{0};
+  bool force_redraw_{true};  // draw everything on the first poll, e.g. dots for speakers that start offline
+
   // Menu state
   bool in_menu_{false};
   int menu_level_{0};  // 0 = main menu, 1 = submenu, etc.
   int menu_position_{0};
   int menu_items_count_{0};
-  float volume_step_{1.0f};  // Default 1dB steps
-  
-  // Display settings
-  int backlight_level_{100};  // 0-100%
-  int display_timeout_{60};  // In seconds
-  uint32_t last_interaction_{0};
-  bool display_active_{true};
-  
+
+  // Upper bound for any volume sent to the speakers (dB)
+  float max_volume_{120.0f};
+
   // Backlight control
   output::FloatOutput *backlight_pin_{nullptr};
-
-  // Rate limiting for volume changes
-  uint32_t last_volume_change_{0}; // Timestamp of last volume change to rate limit
-  bool user_adjusting_volume_{false}; // Flag to indicate user is actively changing volume
-  
 };
 
 }  // namespace vol_ctrl

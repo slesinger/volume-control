@@ -107,9 +107,14 @@ void update_datetime(TFT_eSPI *tft, const std::string &datetime) {
 }
 
 void update_volume_display(TFT_eSPI *tft, float volume, bool user_adjusting) {
-  // Clear previous volume display
-  ScreenRegion region = get_volume_region();
-  // tft->fillRect(region.x, region.y, region.w, region.h, TFT_BLACK);
+  // Digits are drawn with a background colour, so a narrower number (100 -> 99) leaves stray columns of
+  // the wider one behind. Clear the whole band only when the digit count changes.
+  static int last_digits = 0;
+  int digits = volume < 0.0f ? 2 : (static_cast<int>(volume) >= 100 ? 3 : 2);
+  if (digits != last_digits) {
+    tft->fillRect(0, TOP_AREA_HEIGHT + 10, 240, 240 - BOTTOM_AREA_HEIGHT - TOP_AREA_HEIGHT - 12, TFT_BLACK);
+    last_digits = digits;
+  }
 
   // Draw new volume
   tft->setTextFont(8);
@@ -139,6 +144,8 @@ void update_volume_display(TFT_eSPI *tft, float volume, bool user_adjusting) {
 
 void update_mute_status(TFT_eSPI *tft, bool muted, float volume) {
   if (!muted) {
+    // Wipe the red mute icon (it extends beyond the digits) before redrawing the volume
+    tft->fillRect(0, TOP_AREA_HEIGHT + 10, 240, 240 - BOTTOM_AREA_HEIGHT - TOP_AREA_HEIGHT - 12, TFT_BLACK);
     update_volume_display(tft, volume);
     return; // Avoid drawing mute sign if not muted
   }

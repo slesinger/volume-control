@@ -14,14 +14,7 @@ namespace esphome
   {
 
     static const char *const TAG = "vol_ctrl";
-    uint32_t button_press_time_ = 0;
-
-    enum class LoopState
-    {
-      WAIT_FOR_WIFI,
-      MAIN_LOOP,
-    };
-    LoopState loop_state = LoopState::WAIT_FOR_WIFI;
+    static uint32_t button_press_time_ = 0;
 
     void VolCtrl::setup()
     {
@@ -44,145 +37,126 @@ namespace esphome
       // Initialize network subsystem
       network::init();
 
-      // Set initial state
-      uint32_t now = millis();
-      last_interaction_ = now;
-      last_device_check_ = now - 5000; // Force immediate device check
-      display_active_ = true;
+      // Force an immediate device check
+      last_device_check_ = millis() - 5000;
 
       // Add a small delay to let things settle
       esphome::delay(500);
     }
 
-    // Helper to format date/time string
-    std::string get_datetime_string()
+    void VolCtrl::dump_config()
     {
-      time_t now = ::time(nullptr);
-      if (now != 0)
-      {
-        struct tm timeinfo;
-        localtime_r(&now, &timeinfo);
-        char buf[32];
-        static const char *months[] = {"Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"};
-        int month = timeinfo.tm_mon;
-        snprintf(buf, sizeof(buf), "%02d:%02d %s %02d",
-                 timeinfo.tm_hour, timeinfo.tm_min,
-                 (month >= 0 && month < 12) ? months[month] : "---",
-                 timeinfo.tm_mday);
-        return std::string(buf);
-      }
-      return "--:-- --- --";
+      ESP_LOGCONFIG(TAG, "Volume Control:");
+      ESP_LOGCONFIG(TAG, "  Max volume: %.1f dB", this->max_volume_);
     }
 
-    // This loop() logically loops only occasionally. there are inner loops that loop in various frequencies. Variable loop_state tells what inner loop to enter. It is necessary to exit loop swiftly else RTOS will restart the ESP.
+    float VolCtrl::clamp_volume_(float volume) const
+    {
+      if (volume < 0.0f)
+        return 0.0f;
+      if (volume > this->max_volume_)
+        return this->max_volume_;
+      return volume;
+    }
+
+    DeviceState *VolCtrl::representative_state_()
+    {
+      auto &device_states = network::get_device_states();
+      for (auto &entry : device_states)
+      {
+        if (entry.second.is_up)
+          return &entry.second;
+      }
+      return device_states.empty() ? nullptr : &device_states.begin()->second;
+    }
+
+    VolCtrl::PollResult VolCtrl::poll_devices_()
+    {
+      PollResult result;
+      for (auto &entry : network::get_device_states())
+      {
+        const std::string &ipv6 = entry.first;
+        DeviceState &state = entry.second;
+        network::DeviceVolStdbyData data;
+        bool is_up = network::get_device_data(ipv6, data);
+        if (state.set_is_up(is_up))
+        {
+          result.is_up_changed = true;
+          ESP_LOGI(TAG, "Speaker %s is %s", ipv6.c_str(), is_up ? "reachable" : "unreachable");
+        }
+        if (!is_up)
+          continue; // keep the last known values instead of overwriting them with defaults
+        result.standby_changed |= state.set_standby_countdown(data.standby_countdown);
+        state.requested_volume = data.volume;
+        result.mute_changed |= state.set_mute(data.mute);
+      }
+      return result;
+    }
+
+    void VolCtrl::draw_status_(const PollResult &changed, bool force)
+    {
+      DeviceState *state = representative_state_();
+      if (force || changed.is_up_changed)
+        display::update_speaker_dots(this->tft_, network::get_device_states());
+      if (state != nullptr && (force || changed.standby_changed))
+        display::update_standby_time(this->tft_, state->standby_countdown);
+      display::update_datetime(this->tft_, utils::get_datetime_string());
+      display::update_volume_display(this->tft_, state != nullptr ? state->requested_volume : -1.0f);
+      if (state != nullptr && state->muted)
+        display::update_mute_status(this->tft_, true, state->requested_volume);
+      else if (state != nullptr && (force || changed.mute_changed))
+        display::update_mute_status(this->tft_, false, state->requested_volume);
+      display::update_status_message(this->tft_, "Long-press for menu");
+      display::update_wifi_status(this->tft_, wifi::global_wifi_component->is_connected());
+    }
+
+    // Everything runs in ESPHome's cooperative loop, so loop() must return quickly or the watchdog resets the chip.
+    // Encoder and button events arrive via the callbacks below (see yaml).
     void VolCtrl::loop()
     {
       uint32_t now = millis();
-      bool wifi_connected = wifi::global_wifi_component->is_connected();
 
-      // Wait for wifi to connect before proceeding
-      if (!wifi_connected)
+      if (!wifi::global_wifi_component->is_connected())
       {
-        esphome::vol_ctrl::display::update_status_message(this->tft_, "Connecting to WiFi");
-        esphome::vol_ctrl::display::update_wifi_status(this->tft_, wifi_connected);
-        esphome::delay(1000);
-        return; // exit loop() to satisfy ESP watchdog timer
-      }
-
-      // Loop as frequently as possible to keep the UI responsive
-      // Rotary encoder changes are read by esphome, see yaml lambda
-      if (loop_state == LoopState::WAIT_FOR_WIFI)
-      {                                                                                                                                     // TODO this handles case when not in menu mode
-        std::map<std::string, DeviceState> &device_states = const_cast<std::map<std::string, DeviceState> &>(network::get_device_states()); // get list of devices and its states
-
-        // every 5 seconds, we check the device states and update back the requested_vol to sync back from the speakers, acknowledge the display yellow
-        if (now - this->last_device_check_ > 1500)
+        if (now - last_wifi_draw_ > 1000)
         {
-          bool is_up_changed = false;
-          bool standby_countdown_changed = false;
-          bool mute_changed = false;
-          this->last_device_check_ = now;
-          DeviceState *last_state = nullptr;
-          for (auto &entry : device_states)
-          { // for every known device
-            const std::string &ipv6 = entry.first;
-            DeviceState &state = entry.second;
-            network::DeviceVolStdbyData current_device_data;
-            bool is_up = network::get_device_data(ipv6, current_device_data);
-            is_up_changed |= state.set_is_up(is_up);
-            standby_countdown_changed = state.set_standby_countdown(current_device_data.standby_countdown);
-            state.requested_volume = current_device_data.volume;
-            mute_changed = state.set_mute(current_device_data.mute);
-            last_state = &state; // keep reference to the last processed state
-          }
-
-          if (!in_menu_)
-          {
-            // Update changed values on display (every 5sec)
-            if (standby_countdown_changed && last_state)
-              esphome::vol_ctrl::display::update_standby_time(this->tft_, last_state->standby_countdown);
-            if (is_up_changed)
-              esphome::vol_ctrl::display::update_speaker_dots(this->tft_, device_states);
-            esphome::vol_ctrl::display::update_datetime(this->tft_, utils::get_datetime_string());
-            esphome::vol_ctrl::display::update_volume_display(this->tft_, last_state->requested_volume);
-            if (mute_changed && last_state)
-              esphome::vol_ctrl::display::update_mute_status(this->tft_, last_state->muted, last_state->requested_volume);
-            esphome::vol_ctrl::display::update_status_message(this->tft_, "Long-press for menu");
-            esphome::vol_ctrl::display::update_wifi_status(this->tft_, wifi_connected);
-          }
+          last_wifi_draw_ = now;
+          display::update_status_message(this->tft_, "Connecting to WiFi");
+          display::update_wifi_status(this->tft_, false);
         }
+        return;
       }
+
+      if (now - this->last_device_check_ <= 1500)
+        return;
+      this->last_device_check_ = now;
+
+      // The menu owns the screen and polling would only add latency to navigation
+      if (in_menu_)
+        return;
+
+      PollResult changed = poll_devices_();
+      draw_status_(changed, force_redraw_);
+      force_redraw_ = false;
     } // end of loop()
 
     void VolCtrl::update_whole_screen()
     {
-      std::map<std::string, DeviceState> &device_states = const_cast<std::map<std::string, DeviceState> &>(network::get_device_states()); // get list of devices and its states
-      DeviceState *last_state = nullptr;
-      for (auto &entry : device_states)
-      { // for every known device
-        const std::string &ipv6 = entry.first;
-        DeviceState &state = entry.second;
-        network::DeviceVolStdbyData current_device_data;
-        bool is_up = network::get_device_data(ipv6, current_device_data);
-        state.set_is_up(is_up);
-        state.set_standby_countdown(current_device_data.standby_countdown);
-        state.requested_volume = current_device_data.volume;
-        state.set_mute(current_device_data.mute);
-        last_state = &state; // keep reference to the last processed state
-      }
+      poll_devices_();
       this->tft_->fillScreen(TFT_BLACK);
-      esphome::vol_ctrl::display::update_standby_time(this->tft_, last_state->standby_countdown);
-      esphome::vol_ctrl::display::update_speaker_dots(this->tft_, device_states);
-      esphome::vol_ctrl::display::update_datetime(this->tft_, utils::get_datetime_string());
-      esphome::vol_ctrl::display::update_volume_display(this->tft_, last_state->requested_volume);
-      esphome::vol_ctrl::display::update_mute_status(this->tft_, last_state->muted, last_state->requested_volume);
-      esphome::vol_ctrl::display::update_status_message(this->tft_, "Long-press for menu");
-      esphome::vol_ctrl::display::update_wifi_status(this->tft_, wifi::global_wifi_component->is_connected());
+      draw_status_(PollResult{}, true);
     }
 
-    // Handle volume change based on encoder ticks. It can be positive or negative.
-    // If in menu mode, it will navigate the menu instead.
-    // If volume is not initialized yet, it will do nothing.
-    void VolCtrl::volume_change(const std::string &ipv6, float requested_volume)
+    // Clamp and send a volume to one speaker; the state is only updated when the speaker accepted it.
+    bool VolCtrl::apply_volume_(const std::string &ipv6, DeviceState &state, float volume)
     {
-      // If we're in menu mode, use this for menu navigation
-      if (in_menu_)
-      {
-        ESP_LOGI(TAG, "Menu navigation - down"); // TODO this has to be UP also
-        menu_down();
-        return;
-      }
-
-      if (requested_volume < 0.0)
-      { // volume is not initialized yet
-        return;
-      }
-      // TODO make constant setting for maximum volume
-      if (requested_volume > 120.0)
-      { // volume is over limit
-        return;
-      }
-      network::set_device_volume(ipv6, requested_volume);
+      if (!state.is_up)
+        return false;
+      volume = clamp_volume_(volume);
+      if (!network::set_device_volume(ipv6, volume))
+        return false;
+      state.set_requested_volume(volume);
+      return true;
     }
 
     void VolCtrl::button_pressed()
@@ -214,26 +188,26 @@ namespace esphome
         return;
       }
 
-      ESP_LOGI(TAG, "Toggling mute state");
-      // Determine the current mute state from one of the speakers
-      auto &device_states = const_cast<std::map<std::string, DeviceState> &>(network::get_device_states());
+      // One target for all speakers: mute unless every reachable speaker is already muted
+      auto &device_states = network::get_device_states();
+      bool any_unmuted = false;
       for (auto &entry : device_states)
       {
-        const std::string &ipv6 = entry.first;
-        DeviceState &state = entry.second;
-        if (state.muted)
-        {
-          state.set_mute(false);
-          network::set_device_mute(ipv6, false);
-          esphome::vol_ctrl::display::update_mute_status(this->tft_, false, state.get_requested_volume());
-        }
-        else
-        {
-          state.set_mute(true);
-          network::set_device_mute(ipv6, true);
-          esphome::vol_ctrl::display::update_mute_status(this->tft_, true, state.get_requested_volume());
-        }
+        if (entry.second.is_up && !entry.second.muted)
+          any_unmuted = true;
       }
+      const bool target = any_unmuted;
+      ESP_LOGI(TAG, "Setting mute to %s on all speakers", target ? "on" : "off");
+
+      for (auto &entry : device_states)
+      {
+        if (entry.second.is_up && network::set_device_mute(entry.first, target))
+          entry.second.set_mute(target);
+      }
+
+      DeviceState *state = representative_state_();
+      if (state != nullptr)
+        display::update_mute_status(this->tft_, state->muted, state->requested_volume);
     }
 
     void VolCtrl::enter_menu()
@@ -393,93 +367,72 @@ namespace esphome
       }
     }
 
+    void VolCtrl::step_volume_(float diff)
+    {
+      bool first = true;
+      for (auto &entry : network::get_device_states())
+      {
+        DeviceState &state = entry.second;
+        if (!state.is_up || state.get_requested_volume() < 0.0f)
+          continue; // unreachable or not synced yet
+        float target = clamp_volume_(state.get_requested_volume() + diff);
+        if (target == state.get_requested_volume())
+          continue; // already at the limit
+        if (apply_volume_(entry.first, state, target) && first)
+        {
+          display::update_volume_display(this->tft_, target, true); // blue until the next poll confirms
+          first = false;
+        }
+      }
+      this->last_device_check_ = millis(); // delay the next poll so it doesn't overwrite the blue value immediately
+    }
+
     // This function is only called from Home Assistant service
     void VolCtrl::set_volume_from_hass(float level)
     {
-      // Ignore volume setting when in menu
-
+      if (in_menu_)
+        return; // the menu owns the screen and the knob
       ESP_LOGI(TAG, "Setting volume from Home Assistant to %.1f", level);
-
-      // Cap volume level to valid range
-      if (level < 0.0f || level > 120.0f) // TODO use configurable constant
+      if (!(level >= 0.0f)) // also rejects NaN
         return;
 
-      std::map<std::string, DeviceState> &device_states = const_cast<std::map<std::string, DeviceState> &>(network::get_device_states());
-      for (auto &entry : device_states)
+      level = clamp_volume_(level);
+      bool first = true;
+      for (auto &entry : network::get_device_states())
       {
-        DeviceState &state = entry.second;
-        const std::string &ipv6 = entry.first;
-        volume_change(ipv6, level);
+        if (apply_volume_(entry.first, entry.second, level) && first)
+        {
+          display::update_volume_display(this->tft_, level, true);
+          first = false;
+        }
       }
     }
 
     // Diff can be negative, see yaml lambda
     void VolCtrl::volume_change_from_hass(float diff)
     {
-      std::map<std::string, DeviceState> &device_states = const_cast<std::map<std::string, DeviceState> &>(network::get_device_states());
-      for (auto &entry : device_states)
-      {
-        DeviceState &state = entry.second;
-        const std::string &ipv6 = entry.first;
-        float current_volume = state.get_requested_volume();
-        if (current_volume < 0.0f)
-        {
-          return;
-        }
-        set_volume_from_hass(current_volume + diff);
-      }
+      if (in_menu_)
+        return;
+      step_volume_(diff);
     }
 
     void VolCtrl::process_encoder_change(int diff)
     {
-      // Ignore encoder input when in menu
+      if (diff == 0)
+        return;
+
       if (in_menu_)
       {
         // Use encoder for menu navigation
         if (diff > 0)
-        {
-          menu_down(); // Move menu selection down
-        }
-        else if (diff < 0)
-        {
-          menu_up(); // Move menu selection up
-        }
+          menu_down();
+        else
+          menu_up();
         return;
       }
 
-      ESP_LOGI(TAG, "diff %d", diff);
-
-      if (diff == 0)
-      {
-        return; // no change
-      }
-      
-      if (fabs(diff) > 10)
-      {
-        return; // this happens when device is started and last_value variable in volume_control.cpp is not initialized yet
-      } 
-      this->last_volume_change_ = millis(); // volume will commit since last encoder change
-      this->last_device_check_ = millis();  // reset device check timer to force update display
-      // Not in menu mode, so process volume change
-      std::map<std::string, DeviceState> &device_states = const_cast<std::map<std::string, DeviceState> &>(network::get_device_states()); // get list of devices and its states
-      bool first = true;
-      for (auto &entry : device_states)
-      {
-        DeviceState &state = entry.second;
-        float requested_vol = state.get_requested_volume();
-        if (requested_vol < 0.0f)
-        {
-          break; // No valid volume to change
-        }
-        requested_vol = requested_vol + diff;
-        state.set_requested_volume(requested_vol);
-        const std::string &ipv6 = entry.first;
-        volume_change(ipv6, requested_vol); // send volume change to the speaker
-        if (first) {
-          esphome::vol_ctrl::display::update_volume_display(this->tft_, requested_vol, true);  // blue update
-          first = false;
-        }
-      }
+      ESP_LOGD(TAG, "Encoder diff %d", diff);
+      step_volume_(static_cast<float>(diff));
     }
 
   } // namespace vol_ctrl

@@ -7,6 +7,9 @@
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <cstring>
+#include <cerrno>
+#include <fcntl.h>
+#include <sys/select.h>
 #include <map>
 #include "esphome/core/hal.h"
 #include <lwip/netif.h>
@@ -24,107 +27,124 @@ static std::map<std::string, std::string> device_map;
 // Device status cache
 static std::map<std::string, DeviceState> device_states;
 
-// Rotating symbol state
-static std::map<std::string, int> device_rot;
+namespace {
 
+// Closes the socket on every exit path.
+struct SocketGuard {
+  int fd;
+  explicit SocketGuard(int f) : fd(f) {}
+  ~SocketGuard() {
+    if (fd >= 0) close(fd);
+  }
+};
+
+constexpr uint32_t CONNECT_TIMEOUT_MS = 300;
+constexpr uint32_t IO_TIMEOUT_MS = 500;
+constexpr size_t MAX_RESPONSE_BYTES = 2048;
+
+// lwIP's connect() cannot be bounded with SO_SNDTIMEO, so connect non-blocking and wait in select().
+bool connect_with_timeout(int sock, const sockaddr *addr, socklen_t len, uint32_t timeout_ms) {
+  int flags = fcntl(sock, F_GETFL, 0);
+  if (flags < 0 || fcntl(sock, F_SETFL, flags | O_NONBLOCK) < 0) return false;
+
+  int rc = connect(sock, addr, len);
+  if (rc < 0 && errno != EINPROGRESS) return false;
+
+  if (rc < 0) {
+    fd_set wfds;
+    FD_ZERO(&wfds);
+    FD_SET(sock, &wfds);
+    struct timeval tv;
+    tv.tv_sec = timeout_ms / 1000;
+    tv.tv_usec = (timeout_ms % 1000) * 1000;
+    if (select(sock + 1, nullptr, &wfds, nullptr, &tv) <= 0) {
+      errno = ETIMEDOUT;
+      return false;
+    }
+    int err = 0;
+    socklen_t elen = sizeof(err);
+    if (getsockopt(sock, SOL_SOCKET, SO_ERROR, &err, &elen) < 0 || err != 0) {
+      errno = err;
+      return false;
+    }
+  }
+  return fcntl(sock, F_SETFL, flags) >= 0;  // back to blocking, I/O is bounded by SO_*TIMEO
+}
+
+}  // namespace
+
+// Failures are logged at DEBUG only: offline speakers are polled every cycle and would flood the log.
+// Callers decide whether a failure deserves a louder message.
 bool send_ssc_command(const std::string &ipv6, const std::string &command, std::string &response) {
-  int sock = -1;
-  bool success = false;
   uint32_t start_time = millis();
-  
-  ESP_LOGD(TAG, "Attempting to connect to [%s]:45 to send command: %s", ipv6.c_str(), command.c_str());
+  ESP_LOGD(TAG, "Sending to [%s]:45: %s", ipv6.c_str(), command.c_str());
 
-  // Create socket
-  sock = socket(AF_INET6, SOCK_STREAM, 0);
+  SocketGuard guard(socket(AF_INET6, SOCK_STREAM, 0));
+  const int sock = guard.fd;
   if (sock < 0) {
     ESP_LOGE(TAG, "Failed to create socket: %d (%s)", errno, strerror(errno));
     return false;
   }
 
-  // Set socket options
   struct timeval timeout;
-  timeout.tv_sec = 1;  // 1 second timeout (shorter for better UI responsiveness)
-  timeout.tv_usec = 0;
-  if (setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout)) < 0) {
-    ESP_LOGE(TAG, "Failed to set receive timeout: %d (%s)", errno, strerror(errno));
-    close(sock);
-    return false;
-  }
-  
-  if (setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout)) < 0) {
-    ESP_LOGE(TAG, "Failed to set send timeout: %d (%s)", errno, strerror(errno));
-    close(sock);
+  timeout.tv_sec = IO_TIMEOUT_MS / 1000;
+  timeout.tv_usec = (IO_TIMEOUT_MS % 1000) * 1000;
+  if (setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout)) < 0 ||
+      setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout)) < 0) {
+    ESP_LOGE(TAG, "Failed to set socket timeouts: %d (%s)", errno, strerror(errno));
     return false;
   }
 
-  // Connect to the device
   struct sockaddr_in6 sa;
   memset(&sa, 0, sizeof(sa));
   sa.sin6_family = AF_INET6;
   sa.sin6_port = htons(45);  // Default SSC port is 45
-  int pton_result = inet_pton(AF_INET6, ipv6.c_str(), &sa.sin6_addr);
-  if (pton_result != 1) {
+  if (inet_pton(AF_INET6, ipv6.c_str(), &sa.sin6_addr) != 1) {
     ESP_LOGE(TAG, "Invalid IPv6 address format: %s", ipv6.c_str());
-    close(sock);
     return false;
   }
 
-  ESP_LOGD(TAG, "Socket created, attempting to connect to [%s]:45...", ipv6.c_str());
-  int connect_result = connect(sock, (struct sockaddr *)&sa, sizeof(sa));
-  if (connect_result < 0) {
-    ESP_LOGE(TAG, "Failed to connect to %s: %d (errno: %d - %s)", 
-             ipv6.c_str(), connect_result, errno, strerror(errno));
-    close(sock);
+  if (!connect_with_timeout(sock, (struct sockaddr *) &sa, sizeof(sa), CONNECT_TIMEOUT_MS)) {
+    ESP_LOGD(TAG, "Failed to connect to %s: errno %d (%s)", ipv6.c_str(), errno, strerror(errno));
     return false;
   }
-  ESP_LOGD(TAG, "Connected to [%s]:45 in %u ms", ipv6.c_str(), millis() - start_time);
 
-  // Always send command with CRLF line ending as required by the protocol
+  // SSC messages are terminated by CRLF
   std::string request = command + "\r\n";
-  int sent = 0, total_sent = 0;
-  ESP_LOGD(TAG, "Sending %d bytes: %s", (int)request.length(), request.c_str());
-  
-  while (total_sent < (int)request.length()) {
-    sent = send(sock, request.c_str() + total_sent, request.length() - total_sent, 0);
-    if (sent < 0) {
-      ESP_LOGE(TAG, "Failed to send command: %d (%s)", errno, strerror(errno));
-      close(sock);
+  size_t total_sent = 0;
+  while (total_sent < request.length()) {
+    int sent = send(sock, request.c_str() + total_sent, request.length() - total_sent, 0);
+    if (sent <= 0) {
+      ESP_LOGD(TAG, "Failed to send to %s: errno %d (%s)", ipv6.c_str(), errno, strerror(errno));
       return false;
     }
     total_sent += sent;
   }
-  ESP_LOGD(TAG, "Successfully sent %d bytes in %u ms", total_sent, millis() - start_time);
 
-  // Receive the response
-  char buffer[512];
-  memset(buffer, 0, sizeof(buffer));
-  ESP_LOGD(TAG, "Waiting for response...");
-  int bytes_received = recv(sock, buffer, sizeof(buffer) - 1, 0);
-  if (bytes_received < 0) {
-    ESP_LOGE(TAG, "Failed to receive response: %d (%s)", errno, strerror(errno));
-    close(sock);
-    return false;
+  // TCP is a stream: keep reading until the CRLF that terminates the reply
+  response.clear();
+  char buffer[256];
+  while (response.size() < MAX_RESPONSE_BYTES && response.find("\r\n") == std::string::npos) {
+    int n = recv(sock, buffer, sizeof(buffer), 0);
+    if (n < 0) {
+      ESP_LOGD(TAG, "Failed to receive from %s: errno %d (%s)", ipv6.c_str(), errno, strerror(errno));
+      return false;
+    }
+    if (n == 0) break;  // peer closed
+    response.append(buffer, n);
   }
+  if (response.empty()) return false;
 
-  response = std::string(buffer, bytes_received);
-  success = true;
-  
-  ESP_LOGD(TAG, "Received %d bytes in %u ms: %s", 
-          bytes_received, millis() - start_time, response.c_str());
-  
-  // Always close the socket
-  close(sock);
-  
-  return success;
+  ESP_LOGD(TAG, "Received %d bytes in %u ms: %s", (int) response.size(), millis() - start_time, response.c_str());
+  return true;
 }
 
 void register_device(const std::string &name, const std::string &ipv6) {
   device_map[name] = ipv6;
   device_states[ipv6] = DeviceState();
-  device_rot[ipv6] = 0;
 }
 
-const std::map<std::string, DeviceState>& get_device_states() {
+std::map<std::string, DeviceState>& get_device_states() {
   return device_states;
 }
 
