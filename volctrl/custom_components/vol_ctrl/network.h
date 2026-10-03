@@ -15,7 +15,7 @@ namespace esphome
             struct DeviceVolStdbyData
             {
                 int standby_countdown = 0;
-                float volume = -0.1f;
+                float volume = 0.0f;
                 bool mute = false;
                 // Optional extras, -1 when the speaker did not report them
                 int logo_brightness = -1;
@@ -71,7 +71,7 @@ namespace esphome
 
             // Initialize network subsystem
             void init();
-            
+
         } // namespace network
     } // namespace vol_ctrl
 } // namespace esphome

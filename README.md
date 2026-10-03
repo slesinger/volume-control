@@ -9,16 +9,17 @@ For DSP enabled speakers that can be controlled over network IPv6.
 ![Volume Control Device](docs/vyrobek.png)
 
 ## Features
-- Automatic speaker discovery (planned, use KH Tool for discovery, hardcoded)
+- Automatic speaker discovery
 - Volume control
 - Mute control
 - Display of current volume level
 - Display speaker settings
-- Set parametric equalizer settings (planned)
-- Works with Home Assistant
-- 3 configurable buttons (e.g. input select, pause/play, next song)
-- works with Wii Pro
-- deep sleep (rotary push button to wake up)
+- Set parametric equalizer settings
+- Works with Home Assistant (services and entities, see below)
+- 3 extra push buttons (A: cycle WiiM input, B: play/pause, C: next track)
+- WiiM streamer control: input selection, play/pause, next/previous, current input and track on screen (optional)
+- Display brightness (menu 7.2 or HA), persisted in NVS
+- Deep sleep after all speakers were unreachable for a while (menu 7.4), the encoder button wakes it up
 
 It uses Senheiser Sound Control Protocol (SSP) to control the volume of the speakers and reading and setting parameters.
 
@@ -179,28 +180,40 @@ This section shows menu structure and how to navigate through it.
   7.3. Display timeout to stop backlight
   7.4. Set ESP deep sleep timeout (to save power)
 
+Extra push buttons (to GND, internal pull-ups): A -> GPIO32, B -> GPIO33, C -> GPIO14.
+
+## Controls and menu (as implemented)
+
+- Turn: volume (step configurable, default 1 dB). Short press: play/pause on the WiiM (mute when no WiiM is configured).
+  Long press (opens as soon as the hold time is reached): menu; long press again inside the menu closes it.
+- Menu: Play/Pause, Next/Prev. track, Input, Mute, Home Assistant (your own quick actions, see `quick_actions` in the yaml,
+  they fire `esphome.volume_control_action` events), Speakers (online state, volume), Speaker params (logo brightness,
+  auto standby on/off and time, applied to all speakers), Volume setup (max volume, step, backlight, screen-off timeout,
+  deep sleep timeout; saved in NVS), Info (WiFi, IP, uptime, heap, build), Sleep now, Restart.
+- Menu "Param EQ" lists the 10 user bands (`eq2`) and the 20 calibration bands (`eq3`) set in each speaker, read-only; "Speaker info" lists identity, audio and standby settings. Editing EQ, speaker delay and device discovery are not implemented.
+- The encoder is decoded by the component itself (debounced quarter-step state machine), not by ESPHome's rotary_encoder.
+
+## WiiM streamer (optional)
+
+Set `wiim_ip` in `volctrl/volume_control.yaml` under `vol_ctrl:` to the WiiM's IPv4 address, or to `auto` to find it
+with SSDP. Without the option all WiiM features are off. It uses the WiiM HTTP API
+(`docs/HTTP_API_for_WiiM_Products.md`); all requests run on a background task.
+
 # Home Assistant Integration
 
-## Invoking services
-
-### Set Volume Level
-
-```yaml
-action: esphome.volume_control_set_volume
-data:
-  level: 40
-```
-
-### Toggle Mute
-
-```yaml
-action: esphome.volume_control_toggle_mute
-
-### Volume Up/Down
+Services (`esphome.volume_control_<name>`): `set_volume(level)`, `volume_up(diff)`, `volume_down(diff)`,
+`toggle_mute`, `mute`, `unmute`, `set_display_brightness(brightness)`, `deep_sleep`,
+`cycle_input`, `set_input(input)`, `pause`, `next`, `previous`.
 
 ```yaml
 action: esphome.volume_control_volume_up
+data:
+  diff: 2
 ```
+
+Entities: `Volume Level` (number), `Current Volume` and `Speaker Muted` (sensors), `Volume Control` (media player,
+volume slider only), `Audio Input` (select), `Current Audio Input`, buttons `Cycle Input`, `Play Pause`, `Next Track`.
+HA sees volume as 0..`ha_volume_range` dB (yaml substitution, default 60) so a slider cannot reach the full 120 dB.
 
 # Resources
 
