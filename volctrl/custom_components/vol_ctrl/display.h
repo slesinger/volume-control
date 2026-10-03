@@ -2,6 +2,7 @@
 
 #include <string>
 #include <map>
+#include <vector>
 #include <TFT_eSPI.h>
 #include "device_state.h"
 
@@ -11,6 +12,9 @@ namespace esphome
     {
         namespace display
         {
+
+            // State of something that is established asynchronously: shown orange while PENDING
+            enum class LinkState { PENDING, UP, DOWN };
 
             // Display drawing functions
             void draw_wifi_icon(TFT_eSPI *tft, bool connected);
@@ -25,6 +29,8 @@ namespace esphome
             void update_volume_display(TFT_eSPI *tft, float volume, bool user_adjusting = false);
             void update_mute_status(TFT_eSPI *tft, bool muted, float volume = -1.0f);
             void update_standby_status(TFT_eSPI *tft, bool standby, bool prev_standby);
+            void clear_screen(TFT_eSPI *tft);  // repaints the stone background
+            void update_track_info(TFT_eSPI *tft, const std::string &above, const std::string &below);
             void update_status_message(TFT_eSPI *tft, const std::string &status);
 
             // Menu drawing functions

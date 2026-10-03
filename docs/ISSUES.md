@@ -4,7 +4,7 @@ Found by code inspection (not hardware-tested). Ordered by priority. Mark `[x]` 
 
 ## Correctness / stability
 
-- [ ] **1. (partly fixed: connect now has a 300 ms select timeout, recv 500 ms; calls are still synchronous) Blocking network I/O in the main loop** (`network.cpp: send_ssc_command`). `connect()` has no timeout (SO_SNDTIMEO doesn't bound connect on lwIP), recv/send timeouts are 1 s, and each speaker is polled sequentially, so one powered-off speaker can stall `loop()` for seconds → watchdog resets, laggy encoder. Fix: non-blocking connect with `select` timeout (~200 ms), or a FreeRTOS task that does network I/O and publishes state via a queue/mutex.
+- [x] **1. Blocking network I/O in the main loop** (`network.cpp: send_ssc_command`). `connect()` has no timeout (SO_SNDTIMEO doesn't bound connect on lwIP), recv/send timeouts are 1 s, and each speaker is polled sequentially, so one powered-off speaker can stall `loop()` for seconds → watchdog resets, laggy encoder. Fix: non-blocking connect with `select` timeout (~200 ms), or a FreeRTOS task that does network I/O and publishes state via a queue/mutex.
 - [x] **2. Null dereference with no devices** (`vol_ctrl.cpp:127` `last_state->requested_volume`, and `update_whole_screen()` uses `last_state` unguarded at every call). Crashes if no device is registered.
 - [x] **3. Change flags overwritten, not OR-ed** (`vol_ctrl.cpp:113,115`): `standby_countdown_changed = …` / `mute_changed = …` only reflect the last speaker; `is_up_changed |=` is correct. Use `|=` everywhere.
 - [x] **4. Single `recv()` for the reply** (`network.cpp`). TCP may deliver partial data and replies end in CRLF; larger replies (EQ queries) exceed the 512-byte buffer. Read until `\r\n` / buffer full.
@@ -18,9 +18,9 @@ Found by code inspection (not hardware-tested). Ordered by priority. Mark `[x]` 
 
 ## Menu / UI
 
-- [ ] **12. Menu levels 2 and 3 are unreachable.** All submenus set `menu_level_ = 1`; the switch cases `2`/`3` in `menu_select` are dead and the renderer disambiguates by `menu_items_count_` (4/6/7). Introduce a submenu id / data-driven menu.
-- [ ] **13. Item counts don't match rendered items**: EQ submenu count 4 but 3 rows drawn, speaker params 6 vs 5 rows, volume settings 7 vs 5 rows → highlight can land on nothing. "Deep sleep timeout" is drawn at y=90, overlapping "Backlight intensity".
-- [ ] **14. Menu dot Y positions** (`52 + 20*i` clear vs `58 + 20*i` draw) are magic numbers duplicated from text rows (`50 + 20*i`); derive from one `MENU_ROW_Y(i)`.
+- [x] **12. Menu levels 2 and 3 are unreachable.** (fixed on `port-master-ideas`: data-driven menu in `menu.cpp`) All submenus set `menu_level_ = 1`; the switch cases `2`/`3` in `menu_select` are dead and the renderer disambiguates by `menu_items_count_` (4/6/7). Introduce a submenu id / data-driven menu.
+- [x] **13. Item counts don't match rendered items**: EQ submenu count 4 but 3 rows drawn, speaker params 6 vs 5 rows, volume settings 7 vs 5 rows → highlight can land on nothing. "Deep sleep timeout" is drawn at y=90, overlapping "Backlight intensity".
+- [x] **14. Menu dot Y positions** (`52 + 20*i` clear vs `58 + 20*i` draw) are magic numbers duplicated from text rows (`50 + 20*i`); derive from one `MENU_ROW_Y(i)`.
 - [ ] **15. Button behaviour differs from spec**: README says long-press = 1 s and "volume 0 toggles mute"; code uses 300 ms and does not implement the volume-0 rule. Pick one and update README.
 - [ ] **16. Rate limit from spec is not implemented**: README says commands are sent at most once per second; `last_volume_change_` is written but never read. (Current behaviour — send on every tick — works well per the latest commit, so update the README rather than add a limit; but do coalesce, see ROADMAP.)
 - [ ] **17. Datetime region** `{240, 0, 100, …}` relies on TR_DATUM and is never cleared except by overdraw with background colour; a shorter string can leave artefacts. Datum is reset to `MC_DATUM` only inside `update_datetime`; other draw functions assume it silently.
@@ -49,3 +49,6 @@ Found by code inspection (not hardware-tested). Ordered by priority. Mark `[x]` 
 - Polling is skipped while the menu is open; HA volume services are ignored in the menu.
 - `max_volume` option (yaml: 100 dB) caps every volume sent.
 - Fixed off-by-one in `extract_json_value`; removed duplicated `utils/json.*`, `utils/datetime.*`.
+
+- Branch `port-master-ideas`: HA services/entities, WiiM control (own worker task, HTTP API only, no UPnP), brightness editor and deep sleep (settings persisted in NVS), "Deep sleep timeout" menu row no longer overlaps (#13 for the volume settings submenu, count 7 -> 5), extra push buttons. Compile-checked only.
+- Branch `async`: all socket I/O moved to a FreeRTOS worker task (`network.cpp`). Writes are coalesced (latest volume/mute per speaker), polls back off to 5 s for unreachable speakers, and polls that race with a write are discarded. `loop()` and the encoder/button callbacks no longer touch the network.

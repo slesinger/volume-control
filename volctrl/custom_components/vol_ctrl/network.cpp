@@ -7,7 +7,12 @@
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
+#include <atomic>
 #include <cstring>
+#include <mutex>
+#include <vector>
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
 #include <cerrno>
 #include <fcntl.h>
 #include <sys/select.h>
@@ -43,7 +48,7 @@ struct SocketGuard {
 
 constexpr uint32_t CONNECT_TIMEOUT_MS = 300;
 constexpr uint32_t IO_TIMEOUT_MS = 500;
-constexpr size_t MAX_RESPONSE_BYTES = 2048;
+constexpr size_t MAX_RESPONSE_BYTES = 4096;  // the 20-band calibration EQ reply is about 1.8 kB
 
 // lwIP's connect() cannot be bounded with SO_SNDTIMEO, so connect non-blocking and wait in select().
 bool connect_with_timeout(int sock, const sockaddr *addr, socklen_t len, uint32_t timeout_ms) {
@@ -209,63 +214,300 @@ bool send_ssc_command(const std::string &ipv6, const std::string &command, std::
   return success;
 }
 
+namespace {
+
+// Speaker as seen by the worker task. Pending-write fields and bookkeeping are guarded by `mtx`.
+struct Link {
+  std::string ipv6;
+  bool has_volume = false;
+  float volume = 0.0f;
+  bool has_mute = false;
+  bool mute = false;
+  uint32_t write_epoch = 0;   // bumped on every request, used to discard polls that raced with a write
+  uint32_t last_write_ms = 0;
+  uint32_t next_poll_ms = 0;
+  uint8_t failed_polls = 0;   // consecutive, drives the back-off
+  bool was_up = false;
+  std::vector<std::string> pending_raw;  // other writes (speaker parameters), sent in order
+  bool details_wanted = false;
+};
+
+constexpr uint32_t POLL_INTERVAL_UP_MS = 1500;
+constexpr uint32_t POLL_INTERVAL_FAST_RETRY_MS = 500;  // first failures: the first connect often loses to neighbour discovery
+constexpr uint8_t FAST_RETRIES = 6;
+constexpr uint32_t POLL_INTERVAL_DOWN_MS = 5000;  // back off from unreachable speakers (each attempt costs a connect timeout)
+constexpr uint32_t QUIET_AFTER_WRITE_MS = 400;    // let the speaker settle before reading its state back
+
+std::vector<Link> links;  // filled before start(), never resized afterwards
+std::vector<PollUpdate> updates;
+std::map<std::string, Details> details;  // guarded by mtx
+std::mutex mtx;
+TaskHandle_t worker = nullptr;
+std::atomic<bool> online{false};
+
+Link *find_link(const std::string &ipv6) {
+  for (auto &l : links)
+    if (l.ipv6 == ipv6) return &l;
+  return nullptr;
+}
+
+// Optional field of a reply: -1 when absent (older firmware, speaker without a logo, ...)
+int optional_int(const std::string &json, const char *key) {
+  size_t pos = json.find(std::string("\"") + key + "\":");
+  if (pos == std::string::npos) return -1;
+  pos += strlen(key) + 3;
+  return static_cast<int>(strtol(json.c_str() + pos, nullptr, 10));
+}
+
+int optional_bool(const std::string &json, const char *key) {
+  size_t pos = json.find(std::string("\"") + key + "\":");
+  if (pos == std::string::npos) return -1;
+  pos += strlen(key) + 3;
+  if (json.compare(pos, 4, "true") == 0) return 1;
+  if (json.compare(pos, 5, "false") == 0) return 0;
+  return -1;
+}
+
+// Blocking: only call from the worker task.
+bool get_device_data_blocking(const std::string &ipv6, DeviceVolStdbyData &data) {
+  std::string response;
+  if (!send_ssc_command(
+          ipv6, "{\"device\":{\"standby\":{\"countdown\":null,\"auto_standby_time\":null,\"enabled\":null}},"
+          "\"audio\":{\"out\":{\"level\":null,\"mute\":null}},\"ui\":{\"logo\":{\"brightness\":null}}}",
+          response))
+    return false;
+
+  float level = 0.0f;
+  float countdown = 0.0f;
+  bool mute = false;
+  bool ok = true;
+  ok &= utils::extract_json_number(response, "level", level);
+  ok &= utils::extract_json_number(response, "countdown", countdown);
+  ok &= utils::check_json_boolean(response, "mute", mute);
+  if (!ok) return false;
+  data.volume = level;
+  data.standby_countdown = static_cast<int>(countdown);
+  data.mute = mute;
+  data.logo_brightness = optional_int(response, "brightness");
+  data.auto_standby_time = optional_int(response, "auto_standby_time");
+  data.auto_standby_enabled = optional_bool(response, "enabled");
+  return true;
+}
+
+bool send_volume_blocking(const std::string &ipv6, float volume) {
+  std::string response;
+  std::string command = "{\"audio\":{\"out\":{\"level\":" + std::to_string(volume) + "}}}";
+  if (send_ssc_command(ipv6, command, response)) return true;
+  ESP_LOGW(TAG, "Failed to set volume for device %s", ipv6.c_str());
+  return false;
+}
+
+bool send_mute_blocking(const std::string &ipv6, bool mute) {
+  std::string response;
+  std::string command = "{\"audio\":{\"out\":{\"mute\":" + std::string(mute ? "true" : "false") + "}}}";
+  if (send_ssc_command(ipv6, command, response)) return true;
+  ESP_LOGW(TAG, "Failed to %s device %s", mute ? "mute" : "unmute", ipv6.c_str());
+  return false;
+}
+
+bool time_reached(uint32_t now, uint32_t deadline) { return static_cast<int32_t>(now - deadline) >= 0; }
+
+void worker_task(void *) {
+  for (;;) {
+    // Woken by request_*(), otherwise tick often enough to notice due polls
+    ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(50));
+    if (!online.load()) continue;
+
+    // 1) Writes first, for every speaker, so a slow poll never delays the knob
+    for (auto &l : links) {
+      bool has_volume, has_mute, mute;
+      float volume;
+      std::vector<std::string> raw;
+      {
+        std::lock_guard<std::mutex> lock(mtx);
+        has_volume = l.has_volume;
+        volume = l.volume;
+        has_mute = l.has_mute;
+        mute = l.mute;
+        l.has_volume = l.has_mute = false;
+        raw.swap(l.pending_raw);
+        if (has_volume || has_mute || !raw.empty()) l.last_write_ms = millis();
+      }
+      bool ok = true;
+      for (const auto &command : raw) {
+        std::string response;
+        if (!send_ssc_command(l.ipv6, command, response)) {
+          ESP_LOGW(TAG, "Failed to send %s to %s", command.c_str(), l.ipv6.c_str());
+          ok = false;
+        }
+      }
+      if (has_mute) ok &= send_mute_blocking(l.ipv6, mute);
+      if (has_volume) ok &= send_volume_blocking(l.ipv6, volume);
+      if (!ok) {
+        std::lock_guard<std::mutex> lock(mtx);
+        l.next_poll_ms = millis();  // resync UI with the real speaker state
+      }
+    }
+
+    // 1b) Detail pages: a few slow queries for the speaker the user is looking at
+    for (auto &l : links) {
+      {
+        std::lock_guard<std::mutex> lock(mtx);
+        if (!l.details_wanted) continue;
+        l.details_wanted = false;
+      }
+      static const char *const queries[6] = {
+          "{\"device\":{\"name\":null,\"identity\":{\"vendor\":null,\"product\":null,\"serial\":null,\"version\":null}}}",
+          "{\"device\":{\"standby\":{\"enabled\":null,\"auto_standby_time\":null,\"level\":null}},\"ui\":{\"logo\":{\"brightness\":null}}}",
+          "{\"audio\":{\"in\":{\"interface\":null},\"out\":{\"level\":null,\"mute\":null,\"solo\":null,\"delay\":null,\"phaseinversion\":null}}}",
+          "{\"audio\":{\"out\":{\"mixer\":{\"levels\":null,\"inputs\":null}}}}",
+          "{\"audio\":{\"out\":{\"eq2\":{\"enabled\":null,\"type\":null,\"frequency\":null,\"q\":null,\"gain\":null}}}}",
+          "{\"audio\":{\"out\":{\"eq3\":{\"enabled\":null,\"type\":null,\"frequency\":null,\"q\":null,\"gain\":null,\"boost\":null}}}}"};
+      std::string replies[6];
+      for (int i = 0; i < 6; i++) {
+        if (!send_ssc_command(l.ipv6, queries[i], replies[i])) replies[i].clear();
+      }
+      Details d;
+      d.loaded = true;
+      d.identity = replies[0];
+      d.standby = replies[1];
+      d.audio = replies[2];
+      d.mixer = replies[3];
+      d.eq2 = replies[4];
+      d.eq3 = replies[5];
+      std::lock_guard<std::mutex> lock(mtx);
+      details[l.ipv6] = d;
+      l.next_poll_ms = millis();
+    }
+
+    // 2) At most one poll per iteration, so writes queued meanwhile wait for one poll only
+    for (auto &l : links) {
+      uint32_t now = millis();
+      uint32_t epoch;
+      {
+        std::lock_guard<std::mutex> lock(mtx);
+        bool due = time_reached(now, l.next_poll_ms) && !l.has_volume && !l.has_mute && l.pending_raw.empty() &&
+                   (l.last_write_ms == 0 || now - l.last_write_ms >= QUIET_AFTER_WRITE_MS);
+        if (!due) continue;
+        epoch = l.write_epoch;
+      }
+
+      PollUpdate update;
+      update.ipv6 = l.ipv6;
+      update.is_up = get_device_data_blocking(l.ipv6, update.data);
+
+      std::lock_guard<std::mutex> lock(mtx);
+      if (epoch != l.write_epoch) {
+        l.next_poll_ms = millis() + 100;  // a write happened meanwhile, the reading is stale
+      } else if (!update.is_up && l.was_up && l.failed_polls == 0) {
+        // A single failed poll of a speaker that was fine is usually a glitch: look again before reporting it down
+        l.failed_polls = 1;
+        l.next_poll_ms = millis() + 300;
+      } else {
+        l.was_up = update.is_up;
+        l.failed_polls = update.is_up ? 0 : (l.failed_polls < 255 ? l.failed_polls + 1 : 255);
+        l.next_poll_ms = millis() + (update.is_up ? POLL_INTERVAL_UP_MS
+                                     : l.failed_polls <= FAST_RETRIES ? POLL_INTERVAL_FAST_RETRY_MS
+                                                                       : POLL_INTERVAL_DOWN_MS);
+        bool replaced = false;
+        for (auto &u : updates) {
+          if (u.ipv6 == update.ipv6) {
+            u = update;
+            replaced = true;
+          }
+        }
+        if (!replaced) updates.push_back(update);
+      }
+      break;
+    }
+  }
+}
+
+}  // namespace
+
 void register_device(const std::string &name, const std::string &ipv6) {
   device_map[name] = ipv6;
   device_states[ipv6] = DeviceState();
+  Link link;
+  link.ipv6 = ipv6;
+  links.push_back(link);
+}
+
+void start() {
+  if (worker != nullptr) return;
+  xTaskCreate(worker_task, "vol_net", 8192, nullptr, 1, &worker);
+}
+
+void set_online(bool value) { online.store(value); }
+
+void request_volume(const std::string &ipv6, float volume) {
+  Link *l = find_link(ipv6);
+  if (l == nullptr) return;
+  {
+    std::lock_guard<std::mutex> lock(mtx);
+    l->has_volume = true;
+    l->volume = volume;
+    l->write_epoch++;
+  }
+  if (worker != nullptr) xTaskNotifyGive(worker);
+}
+
+void request_mute(const std::string &ipv6, bool mute) {
+  Link *l = find_link(ipv6);
+  if (l == nullptr) return;
+  {
+    std::lock_guard<std::mutex> lock(mtx);
+    l->has_mute = true;
+    l->mute = mute;
+    l->write_epoch++;
+  }
+  if (worker != nullptr) xTaskNotifyGive(worker);
+}
+
+void request_raw(const std::string &ipv6, const std::string &command) {
+  Link *l = find_link(ipv6);
+  if (l == nullptr) return;
+  {
+    std::lock_guard<std::mutex> lock(mtx);
+    if (l->pending_raw.size() < 8) l->pending_raw.push_back(command);
+    l->write_epoch++;
+  }
+  if (worker != nullptr) xTaskNotifyGive(worker);
+}
+
+void request_details(const std::string &ipv6) {
+  Link *l = find_link(ipv6);
+  if (l == nullptr) return;
+  {
+    std::lock_guard<std::mutex> lock(mtx);
+    details[ipv6] = Details();  // "loading"
+    l->details_wanted = true;
+  }
+  if (worker != nullptr) xTaskNotifyGive(worker);
+}
+
+Details get_details(const std::string &ipv6) {
+  std::lock_guard<std::mutex> lock(mtx);
+  auto it = details.find(ipv6);
+  return it == details.end() ? Details() : it->second;
+}
+
+std::string device_name(const std::string &ipv6) {
+  for (const auto &entry : device_map)
+    if (entry.second == ipv6) return entry.first;
+  return ipv6;
+}
+
+bool take_updates(std::vector<PollUpdate> &out) {
+  std::lock_guard<std::mutex> lock(mtx);
+  if (updates.empty()) return false;
+  out.swap(updates);
+  updates.clear();
+  return true;
 }
 
 std::map<std::string, DeviceState>& get_device_states() {
   return device_states;
-}
-
-// Return value indicates whether speaker is up or down, while data struct carrye volume, mute and standby-countdown
-bool get_device_data(const std::string &ipv6, DeviceVolStdbyData &data) {
-  std::string response;
-  bool success = send_ssc_command(
-    ipv6, 
-    "{\"device\":{\"standby\":{\"countdown\":null}},\"audio\":{\"out\":{\"level\":null,\"mute\":null}}}",
-    response);
-  
-  if (success) {
-    float level = 0.0f;
-    float countdown = 0.0f;
-    bool mute = false;
-    bool ok = true;
-    ok &= utils::extract_json_number(response, "level", level);
-    ok &= utils::extract_json_number(response, "countdown", countdown);
-    ok &= utils::check_json_boolean(response, "mute", mute);
-    if (ok) {
-      data.volume = level;
-      data.standby_countdown = static_cast<int>(countdown);
-      data.mute = mute;
-      return true;
-    }
-  }
-  return false;
-}
-
-bool set_device_volume(const std::string &ipv6, float volume) {
-  std::string command = "{\"audio\":{\"out\":{\"level\":" + std::to_string(volume) + "}}}";
-  std::string response;
-  if (network::send_ssc_command(ipv6, command, response)) {
-    // ESP_LOGI(TAG, "Successfully set volume to %.1f for device %s, response: %s", volume, ipv6.c_str(), response.c_str());
-    return true;
-  } else {
-    ESP_LOGE(TAG, "Failed to set volume for device %s - network error", ipv6.c_str());
-    return false;
-  }
-}
-
-bool set_device_mute(const std::string &ipv6, bool mute) {
-  std::string command = "{\"audio\":{\"out\":{\"mute\":" + std::string(mute ? "true" : "false") + "}}}";
-  std::string response;
-  if (network::send_ssc_command(ipv6, command, response)) {
-    ESP_LOGI(TAG, "Successfully %s device %s, response: %s", mute ? "muted" : "unmuted", ipv6.c_str(), response.c_str());
-    return true;
-  } else {
-    ESP_LOGE(TAG, "Failed to %s device %s - network error", mute ? "mute" : "unmute", ipv6.c_str());
-    return false;
-  }
 }
 
 void log_ipv6_addresses() {

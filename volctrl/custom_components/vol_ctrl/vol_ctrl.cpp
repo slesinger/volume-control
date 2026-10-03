@@ -1,4 +1,5 @@
 #include "vol_ctrl.h"
+#include "art.h"
 #include "esphome/core/log.h"
 #include <TFT_eSPI.h>
 #include "esphome/components/wifi/wifi_component.h"
@@ -193,24 +194,156 @@ void VolCtrl::loop() {
         }
       }
 
-      if (now - this->last_device_check_ <= 1500)
-        return;
-      this->last_device_check_ = now;
+      // Switch the screen off after a while without input
+      if (display_timeout_ > 0 && !display_off_ && !button_down_ && now - last_interaction_ > display_timeout_ * 1000UL)
+      {
+        display_off_ = true;
+        if (backlight_pin_ != nullptr)
+          backlight_pin_->set_level(0.0f);
+      }
 
-      // The menu owns the screen and polling would only add latency to navigation
+      // This loop already runs while WiFi is still connecting (see get_setup_priority), so the screen comes up
+      // at once and fills in as the asynchronous steps (WiFi, speakers, WiiM) finish.
+      const bool wifi_connected = wifi::global_wifi_component->is_connected();
+      network::set_online(wifi_connected);
+      wiim::set_online(wifi_connected);
+      check_deep_sleep_(now);
+
+      // Redraw immediately when one of the steps finished, not at the next periodic tick
+      const display::LinkState wiim_state = this->wiim_enabled_ ? wiim_link_state_() : display::LinkState::UP;
+      if (wifi_connected != wifi_shown_ || wiim_state != wiim_shown_)
+      {
+        wifi_shown_ = wifi_connected;
+        wiim_shown_ = wiim_state;
+        last_draw_ = 0;
+      }
+
+      PollResult changed;
+      if (wifi_connected)
+      {
+        changed = apply_poll_updates_();
+        pending_changes_.is_up_changed |= changed.is_up_changed;
+        pending_changes_.standby_changed |= changed.standby_changed;
+        pending_changes_.mute_changed |= changed.mute_changed;
+      }
+
+      // The menu owns the screen; state keeps updating underneath and update_whole_screen() catches up on exit
       if (in_menu_)
+      {
+        if (!editor_.active && now - last_menu_refresh_ > 500)
+        {
+          last_menu_refresh_ = now;
+          if (page_.active)
+            refresh_page_();
+          else
+            refresh_menu_values_();
+        }
         return;
+      }
 
-      PollResult changed = poll_devices_();
-      draw_status_(changed, force_redraw_);
+      // Redraw when speaker data arrived, plus periodically for the clock and the status icons
+      bool got_data = changed.received || force_redraw_;
+      if (!got_data && now - last_draw_ <= 1500)
+        return;
+      last_draw_ = now;
+      // New album art (or none any more) changes the background of everything: repaint the whole screen
+      const uint32_t art_version = art::version();
+      if (art_version != last_art_version_ && !in_menu_ && !display_off_)
+      {
+        last_art_version_ = art_version;
+        update_whole_screen();
+        return;
+      }
+      draw_status_(pending_changes_, force_redraw_);
+      pending_changes_ = PollResult{};
       force_redraw_ = false;
     } // end of loop()
 
+    void VolCtrl::save_settings_()
+    {
+      Settings settings{SETTINGS_VERSION,        this->backlight_level_, this->deep_sleep_timeout_,
+                        this->max_volume_,       this->volume_step_,     this->display_timeout_};
+      this->settings_pref_.save(&settings);
+    }
+
+    void VolCtrl::apply_brightness_()
+    {
+      if (this->backlight_pin_ != nullptr && !this->display_off_)
+        this->backlight_pin_->set_level(this->backlight_level_ / 100.0f);
+    }
+
+    void VolCtrl::set_display_brightness(int brightness)
+    {
+      this->backlight_level_ = std::min(std::max(brightness, MIN_BRIGHTNESS), 100);
+      ESP_LOGI(TAG, "Display brightness %d%%", this->backlight_level_);
+      apply_brightness_();
+      save_settings_();
+    }
+
+    void VolCtrl::set_deep_sleep_timeout(int seconds)
+    {
+      this->deep_sleep_timeout_ = std::max(seconds, 0);
+      this->unavailable_since_ = 0;
+      save_settings_();
+    }
+
+    // Deep sleep once every speaker has been unreachable for deep_sleep_timeout_ seconds (0 = disabled)
+    void VolCtrl::check_deep_sleep_(uint32_t now)
+    {
+      if (this->deep_sleep_timeout_ <= 0)
+        return;
+      bool any_up = false;
+      for (auto &entry : network::get_device_states())
+        any_up |= entry.second.is_up;
+      if (any_up)
+      {
+        this->unavailable_since_ = 0;
+        return;
+      }
+      if (this->unavailable_since_ == 0)
+      {
+        this->unavailable_since_ = now ? now : 1;
+        ESP_LOGI(TAG, "No speaker reachable, deep sleep in %d s", this->deep_sleep_timeout_);
+      }
+      else if ((now - this->unavailable_since_) / 1000 >= static_cast<uint32_t>(this->deep_sleep_timeout_))
+      {
+        deep_sleep();
+      }
+    }
+
+    void VolCtrl::deep_sleep()
+    {
+      ESP_LOGI(TAG, "Entering deep sleep, press the encoder button to wake up");
+      if (this->tft_ != nullptr)
+      {
+        display::clear_screen(this->tft_);
+        this->tft_->writecommand(0x10);  // ST7789 SLPIN
+      }
+      // Backlight really off: with PWM at 0 the output would still sit at min_power (see yaml), and a pin left to
+      // the PWM peripheral floats in deep sleep. Take the pin over, drive it low and latch it through the sleep.
+      if (this->backlight_pin_ != nullptr)
+        this->backlight_pin_->set_level(0.0f);
+      gpio_set_direction(BACKLIGHT_GPIO, GPIO_MODE_OUTPUT);
+      gpio_matrix_out(BACKLIGHT_GPIO, SIG_GPIO_OUT_IDX, false, false);  // plain GPIO output instead of LEDC
+      gpio_set_level(BACKLIGHT_GPIO, 0);
+      gpio_hold_en(BACKLIGHT_GPIO);
+      gpio_deep_sleep_hold_en();
+
+      // The encoder button (GPIO25, active low) wakes the chip. The digital pull-up is off in deep sleep,
+      // so enable the RTC pull-up or the pin floats and wakes the chip spuriously.
+      rtc_gpio_pullup_en(GPIO_NUM_25);
+      rtc_gpio_pulldown_dis(GPIO_NUM_25);
+      esp_sleep_enable_ext0_wakeup(GPIO_NUM_25, 0);
+      App.run_safe_shutdown_hooks();  // flush logs / preferences, close API connections
+      esp_deep_sleep_start();
+    }
+
     void VolCtrl::update_whole_screen()
     {
-      poll_devices_();
-      this->tft_->fillScreen(TFT_BLACK);
+      display::clear_screen(this->tft_);
       draw_status_(PollResult{}, true);
+      pending_changes_ = PollResult{};
+      last_draw_ = millis();
     }
   }
   
@@ -423,116 +556,110 @@ void VolCtrl::menu_up() {
 
     void VolCtrl::button_released()
     {
-      uint32_t press_duration = millis() - button_press_time_;
-      if (press_duration > 300)
-      { // long press threshold
-        ESP_LOGI(TAG, "Long press detected (%ums)", press_duration);
-        enter_menu();
-      }
-      else
+      button_down_ = false;
+      if (page_.active && !long_press_handled_)
       {
-        toggle_mute();
+        close_page_();
+        return;
       }
+      if (editor_.active)
+      {
+        // Pressing saves the value being edited
+        if (editor_.done)
+          editor_.done();
+        close_editor_();
+        return;
+      }
+      if (long_press_handled_)
+        return;  // loop() already acted on the long press (opened or closed the menu)
+      if (in_menu_)
+      {
+        menu_select_();
+        return;
+      }
+      short_press_action_();
+    }
+
+    // Short press outside the menu: always mute toggle (play/pause is in the menu)
+    void VolCtrl::short_press_action_()
+    {
+      toggle_mute();
     }
 
     void VolCtrl::toggle_mute()
     {
-      // If we're in menu mode, use this as a select button
-      if (in_menu_)
-      {
-        ESP_LOGI(TAG, "Button pressed in menu - selecting item");
-        menu_select();
-        return;
-      }
-
       // One target for all speakers: mute unless every reachable speaker is already muted
-      auto &device_states = network::get_device_states();
       bool any_unmuted = false;
-      for (auto &entry : device_states)
+      for (auto &entry : network::get_device_states())
       {
         if (entry.second.is_up && !entry.second.muted)
           any_unmuted = true;
       }
-      const bool target = any_unmuted;
+      set_mute(any_unmuted);
+    }
+
+    void VolCtrl::mute() { set_mute(true); }
+    void VolCtrl::unmute() { set_mute(false); }
+
+    void VolCtrl::set_mute(bool target)
+    {
       ESP_LOGI(TAG, "Setting mute to %s on all speakers", target ? "on" : "off");
 
-      for (auto &entry : device_states)
+      for (auto &entry : network::get_device_states())
       {
-        if (entry.second.is_up && network::set_device_mute(entry.first, target))
-          entry.second.set_mute(target);
+        if (!entry.second.is_up)
+          continue;
+        network::request_mute(entry.first, target);
+        entry.second.set_mute(target); // optimistic, the next poll confirms
       }
 
       DeviceState *state = representative_state_();
-      if (state != nullptr)
+      if (state != nullptr && !in_menu_)
         display::update_mute_status(this->tft_, state->muted, state->requested_volume);
     }
 
-    void VolCtrl::enter_menu()
+    float VolCtrl::get_volume()
     {
-      uint32_t now = millis();
-
-      if (!in_menu_)
-      {
-        ESP_LOGI(TAG, "Entering menu");
-        in_menu_ = true;
-        menu_level_ = 0;
-        menu_position_ = 0;
-        menu_items_count_ = 7; // Number of items in main menu
-
-        // Draw the menu
-        display::draw_menu_screen(this->tft_, menu_level_, menu_position_, menu_items_count_);
-      }
+      DeviceState *state = representative_state_();
+      return state != nullptr ? state->requested_volume : -1.0f;
     }
 
-    void VolCtrl::exit_menu()
+    bool VolCtrl::is_muted()
     {
-      if (in_menu_)
-      {
-        ESP_LOGI(TAG, "Exiting menu");
-        in_menu_ = false;
-        menu_level_ = 0;
-        menu_position_ = 0;
-
-        // Force a full redraw when exiting menu
-        update_whole_screen();
-      }
+      DeviceState *state = representative_state_();
+      return state != nullptr && state->muted;
     }
 
-    void VolCtrl::menu_up()
+    // Both speakers always get the same level: the step is applied to the lowest reachable speaker's level
+    // and the result is sent to all of them.
+    void VolCtrl::step_volume_(float diff)
     {
-      if (in_menu_)
+      float base = group_volume_();
+      if (base < 0.0f)
+        return; // nothing reachable or not synced yet
+      float target = clamp_volume_(base + diff);
+      bool first = true;
+      for (auto &entry : network::get_device_states())
       {
-        int prev_position = menu_position_;
-        menu_position_--;
-        if (menu_position_ < 0)
+        DeviceState &state = entry.second;
+        if (!state.is_up)
+          continue;
+        if (target == state.get_requested_volume())
+          continue; // already there
+        last_volume_request_ = millis();
+        if (apply_volume_(entry.first, state, target) && first)
         {
-          menu_position_ = menu_items_count_ - 1;
+          display::update_volume_display(this->tft_, target, true); // blue until the next poll confirms
+          first = false;
         }
-
-        // Update the menu display
-        display::draw_menu_item_highlight(this->tft_, menu_position_, prev_position);
       }
     }
 
-    void VolCtrl::menu_down()
+    // Lowest known level of the reachable speakers (-1 if none)
+    float VolCtrl::group_volume_()
     {
-      if (in_menu_)
-      {
-        int prev_position = menu_position_;
-        menu_position_++;
-        if (menu_position_ >= menu_items_count_)
-        {
-          menu_position_ = 0;
-        }
-
-        // Update the menu display
-        display::draw_menu_item_highlight(this->tft_, menu_position_, prev_position);
-      }
-    }
-
-    void VolCtrl::menu_select()
-    {
-      if (in_menu_)
+      float result = -1.0f;
+      for (auto &entry : network::get_device_states())
       {
         ESP_LOGI(TAG, "Selected menu item %d", menu_position_);
 
@@ -765,7 +892,51 @@ void VolCtrl::process_encoder_change(int diff) {
       }
 
       ESP_LOGD(TAG, "Encoder diff %d", diff);
-      step_volume_(static_cast<float>(diff));
+      step_volume_(diff * volume_step_);
+    }
+
+    // index = (previous << 2) | current, state = (A << 1) | B; clockwise cycle: 10 -> 11 -> 01 -> 00.
+    // In DRAM: it is read from an interrupt handler.
+#ifndef DRAM_ATTR
+#define DRAM_ATTR
+#endif
+    static const int8_t DRAM_ATTR STEP[16] = {0, -1, +1, 0, +1, 0, 0, -1, -1, 0, 0, +1, 0, +1, -1, 0};
+
+    // The interrupt handler of both encoder pins. A detent is four quarter steps in one direction; steps that go
+    // back and forth (contact bounce) cancel out in `acc`, and a skipped step resets it.
+    void IRAM_ATTR HOT VolCtrl::EncoderStore::gpio_intr(EncoderStore *arg)
+    {
+      const uint8_t current = (arg->pin_a.digital_read() ? 2 : 0) | (arg->pin_b.digital_read() ? 1 : 0);
+      if (current == arg->prev)
+        return;
+      const int8_t step = STEP[(arg->prev << 2) | current];
+      arg->prev = current;
+      if (step == 0)
+      {
+        arg->acc = 0;  // skipped a step: resynchronise
+        return;
+      }
+      arg->acc += step;
+      if (arg->acc >= 4)
+      {
+        arg->detents = arg->detents + 1;
+        arg->acc = 0;
+      }
+      else if (arg->acc <= -4)
+      {
+        arg->detents = arg->detents - 1;
+        arg->acc = 0;
+      }
+    }
+
+    void VolCtrl::note_interaction_()
+    {
+      last_interaction_ = millis();
+      if (display_off_)
+      {
+        display_off_ = false;
+        apply_brightness_();
+      }
     }
     requested_vol = requested_vol + diff;  // TODO handle sensitivity well here
     state.set_requested_volume(requested_vol);

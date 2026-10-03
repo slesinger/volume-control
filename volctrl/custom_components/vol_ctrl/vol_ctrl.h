@@ -43,7 +43,9 @@ class VolCtrl : public Component, public spi::SPIDevice<spi::BIT_ORDER_MSB_FIRST
   void loop() override;
   void dump_config() override;
   
-  float get_setup_priority() const override { return esphome::setup_priority::AFTER_CONNECTION; }
+  // Before WiFi: the display comes up immediately instead of after the connection (setups of lower
+  // priority wait for it). Everything that needs the network is deferred to loop() / the worker tasks.
+  float get_setup_priority() const override { return esphome::setup_priority::HARDWARE; }
   void update_whole_screen();
 
   // User interface methods
@@ -87,6 +89,18 @@ class VolCtrl : public Component, public spi::SPIDevice<spi::BIT_ORDER_MSB_FIRST
   void set_volume_from_hass(float level);
   void volume_change_from_hass(float diff);
 
+  // WiiM streamer controls (no-ops while the WiiM is not configured or offline)
+  void pause() { wiim::toggle_play(); }
+  void next() { wiim::next(); }
+  void previous() { wiim::previous(); }
+  void cycle_input() { wiim::cycle_input(); }
+  void set_input(const std::string &input) { wiim::set_input(input); }
+  std::string get_current_input() { return wiim::get_status().input; }
+
+  // State for Home Assistant entities (representative speaker). Volume is -1 while unknown.
+  float get_volume();
+  bool is_muted();
+
   // Encoder entry point: diff is the number of detents turned (negative = counter-clockwise).
   void process_encoder_change(int diff);
 
@@ -95,19 +109,25 @@ class VolCtrl : public Component, public spi::SPIDevice<spi::BIT_ORDER_MSB_FIRST
     bool is_up_changed{false};
     bool standby_changed{false};
     bool mute_changed{false};
+    bool received{false}; // any poll result arrived (e.g. confirms the volume shown in blue)
   };
 
-  // Query all speakers and update their state. Failed polls only mark the speaker as down.
-  PollResult poll_devices_();
+  // Fold the background poll results into the speaker states. Failed polls only mark the speaker as down.
+  // Never blocks: all socket I/O happens on the network worker task.
+  PollResult apply_poll_updates_();
   // Speaker whose values represent the group on screen (first reachable one, else the first).
   DeviceState *representative_state_();
+  display::LinkState wiim_link_state_();
   float clamp_volume_(float volume) const;
-  // Clamp and send a volume to one speaker, updating its state. Skips speakers known to be down.
+  // Clamp and queue a volume for one speaker, updating its state optimistically. Skips speakers known to be down.
   bool apply_volume_(const std::string &ipv6, DeviceState &state, float volume);
   // Redraw the main screen; with force=true every region, otherwise only the regions flagged in `changed`.
   void draw_status_(const PollResult &changed, bool force);
   // Move every reachable speaker by `diff` dB, clamped to [0, max_volume_].
-  void step_volume_(float diff);
+  float group_volume_();
+    void resync_volumes_();
+    uint32_t last_volume_request_{0};
+    void step_volume_(float diff);
 
   // TFT display instance
   TFT_eSPI *tft_{nullptr};
