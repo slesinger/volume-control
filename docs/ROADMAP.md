@@ -17,7 +17,7 @@ Ordered by value/effort. References like (#12) point to `docs/ISSUES.md`.
 ## Phase 2 – Speaker features
 - Speaker parameter editing (menu 6): logo brightness (`ui.logo.brightness`), delay (`audio.out.delay`), standby timeout (`device.standby.auto_standby_time`), standby enable. Add a generic "numeric editor" screen (encoder = value, press = save).
 - Input selection / status display if the model exposes it.
-- Parametric EQ (menu 4): read `audio.out.eq2` arrays (enabled/type/frequency/q/gain), list bands, edit/enable/disable, curve plot (biquad magnitude response drawn on 240x240). Needs the multi-line reply handling from #4. Keep a "flat" reset action.
+- Parametric EQ (menu 4; the read-only list of eq2/eq3 bands is done, see Param EQ in the menu): read `audio.out.eq2` arrays (enabled/type/frequency/q/gain), list bands, edit/enable/disable, curve plot (biquad magnitude response drawn on 240x240). Needs the multi-line reply handling from #4. Keep a "flat" reset action.
 - Settings backup/restore via HA service (dump speaker JSON like `khtool --backup`).
 
 ## Phase 3 – Power & integration

@@ -44,6 +44,10 @@ namespace esphome
             void draw_menu(TFT_eSPI *tft, const std::string &title, const std::vector<MenuRow> &rows, int selected,
                            int first_visible);
             void draw_menu_row(TFT_eSPI *tft, const MenuRow &row, int visible_index, bool selected);
+            // Read-only scrollable text page (font 2). A line starting with '#' is a heading.
+            int text_page_rows();
+            void draw_text_page(TFT_eSPI *tft, const std::string &title, const std::vector<std::string> &lines,
+                                int first);
             // Full-screen value editor: big value and a bar (fraction 0..1)
             void draw_editor_screen(TFT_eSPI *tft, const std::string &title, const std::string &value, float fraction);
 

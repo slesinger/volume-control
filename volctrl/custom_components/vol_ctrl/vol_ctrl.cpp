@@ -277,7 +277,10 @@ namespace esphome
         if (!editor_.active && now - last_menu_refresh_ > 500)
         {
           last_menu_refresh_ = now;
-          refresh_menu_values_();
+          if (page_.active)
+            refresh_page_();
+          else
+            refresh_menu_values_();
         }
         return;
       }
@@ -409,6 +412,11 @@ namespace esphome
     void VolCtrl::button_released()
     {
       button_down_ = false;
+      if (page_.active && !long_press_handled_)
+      {
+        close_page_();
+        return;
+      }
       if (editor_.active)
       {
         // Pressing saves the value being edited
@@ -574,6 +582,18 @@ namespace esphome
       if (diff == 0)
         return;
       note_interaction_();
+
+      if (page_.active)
+      {
+        const int max_first = std::max(0, static_cast<int>(page_.lines.size()) - display::text_page_rows());
+        const int first = std::min(std::max(page_.first + diff, 0), max_first);
+        if (first != page_.first)
+        {
+          page_.first = first;
+          redraw_page_();
+        }
+        return;
+      }
 
       if (editor_.active)
       {

@@ -370,6 +370,44 @@ void draw_menu(TFT_eSPI *tft, const std::string &title, const std::vector<MenuRo
   }
 }
 
+static const int PAGE_LINE_HEIGHT = 16;
+
+int text_page_rows() {
+  return (240 - MENU_TOP) / PAGE_LINE_HEIGHT;
+}
+
+void draw_text_page(TFT_eSPI *tft, const std::string &title, const std::vector<std::string> &lines, int first) {
+  clear_screen(tft);
+  tft->setTextDatum(TL_DATUM);
+  tft->setTextSize(1);
+  tft->setTextPadding(0);
+  tft->setTextFont(4);
+  tft->setTextColor(TFT_ORANGE);
+  tft->drawString(title.c_str(), 10, 2);
+
+  tft->setTextFont(2);
+  const int rows = text_page_rows();
+  const int total = static_cast<int>(lines.size());
+  for (int i = 0; i < rows && first + i < total; i++) {
+    std::string text = ascii_only(lines[first + i]);
+    const bool heading = !text.empty() && text[0] == '#';
+    if (heading)
+      text.erase(0, 1);
+    tft->setTextColor(heading ? TFT_YELLOW : TFT_WHITE);
+    shorten(tft, text, 226);
+    tft->drawString(text.c_str(), 6, MENU_TOP + i * PAGE_LINE_HEIGHT);
+  }
+
+  if (total > rows) {
+    const int track_h = rows * PAGE_LINE_HEIGHT;
+    fill_bg(tft, 236, MENU_TOP, 3, track_h);
+    tft->fillRect(236, MENU_TOP, 3, track_h, TFT_DARKGREY);
+    const int thumb_h = std::max(8, track_h * rows / total);
+    const int thumb_y = MENU_TOP + (track_h - thumb_h) * first / (total - rows);
+    tft->fillRect(236, thumb_y, 3, thumb_h, TFT_WHITE);
+  }
+}
+
 void draw_editor_screen(TFT_eSPI *tft, const std::string &title, const std::string &value, float fraction) {
   clear_screen(tft);
   tft->setTextSize(1);

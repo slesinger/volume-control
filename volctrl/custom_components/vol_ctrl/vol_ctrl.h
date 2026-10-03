@@ -142,7 +142,7 @@ class VolCtrl : public Component, public spi::SPIDevice<spi::BIT_ORDER_MSB_FIRST
   InternalGPIOPin *pin_b_{nullptr};
 
   // Menu (menu.cpp). The rows are rebuilt from the current state whenever they are drawn or refreshed.
-  enum class MenuId { MAIN, SPEAKERS, SPEAKER_PARAMS, VOLUME_SETUP, INFO, QUICK_ACTIONS };
+  enum class MenuId { MAIN, SPEAKERS, SPEAKER_PARAMS, VOLUME_SETUP, INFO, QUICK_ACTIONS, EQ_SPEAKERS, INFO_SPEAKERS };
   struct MenuItem {
     display::MenuRow row;
     std::function<void()> on_select;  // empty = read-only row
@@ -161,6 +161,22 @@ class VolCtrl : public Component, public spi::SPIDevice<spi::BIT_ORDER_MSB_FIRST
     std::function<void(int)> apply;  // called on every change
     std::function<void()> done;      // called when saved
   };
+  // Read-only scrollable page with speaker details (encoder scrolls, press goes back)
+  enum class PageKind { EQ, INFO };
+  struct Page {
+    bool active{false};
+    PageKind kind{PageKind::EQ};
+    std::string ipv6;
+    std::string title;
+    std::vector<std::string> lines;
+    int first{0};
+  };
+  Page page_;
+  void open_page_(PageKind kind, const std::string &ipv6);
+  void close_page_();
+  void redraw_page_();
+  void refresh_page_();
+  std::vector<std::string> build_page_lines_();
   std::vector<MenuLevel> menu_stack_;
   std::vector<MenuItem> menu_items_;
   Editor editor_;

@@ -40,6 +40,92 @@ std::string short_name(const std::string &name) {
   return dash == std::string::npos ? name : name.substr(0, dash);
 }
 
+// ---- Tiny extractors for the flat SSC replies (keys are unique within one reply) ----
+
+// "key":[a,b,c] or "key":["a","b"] -> items without quotes
+std::vector<std::string> json_list(const std::string &json, const char *key) {
+  std::vector<std::string> items;
+  size_t pos = json.find(std::string("\"") + key + "\":[");
+  if (pos == std::string::npos)
+    return items;
+  pos += strlen(key) + 4;
+  const size_t end = json.find(']', pos);
+  if (end == std::string::npos)
+    return items;
+  std::string current;
+  for (size_t i = pos; i <= end; i++) {
+    if (i == end || json[i] == ',') {
+      items.push_back(current);
+      current.clear();
+    } else if (json[i] != '"') {
+      current += json[i];
+    }
+  }
+  return items;
+}
+
+// "key":value (string, number or bool) -> value text, "" when absent
+std::string json_value(const std::string &json, const char *key) {
+  size_t pos = json.find(std::string("\"") + key + "\":");
+  if (pos == std::string::npos)
+    return "";
+  pos += strlen(key) + 3;
+  if (json[pos] == '"') {
+    const size_t end = json.find('"', pos + 1);
+    return end == std::string::npos ? "" : json.substr(pos + 1, end - pos - 1);
+  }
+  const size_t end = json.find_first_of(",}]", pos);
+  return json.substr(pos, end == std::string::npos ? std::string::npos : end - pos);
+}
+
+std::string number_text(const std::string &value, const char *fmt) {
+  char buf[24];
+  snprintf(buf, sizeof(buf), fmt, atof(value.c_str()));
+  return buf;
+}
+
+std::string filter_type(const std::string &type) {
+  if (type == "PARAMETRIC") return "PK";
+  if (type == "LOWSHELF") return "LS";
+  if (type == "HISHELF" || type == "HIGHSHELF") return "HS";
+  return type.substr(0, 3);
+}
+
+std::string frequency_text(const std::string &value) {
+  const double hz = atof(value.c_str());
+  char buf[24];
+  if (hz >= 1000.0)
+    snprintf(buf, sizeof(buf), "%.2fkHz", hz / 1000.0);
+  else
+    snprintf(buf, sizeof(buf), "%.0fHz", hz);
+  return buf;
+}
+
+// One heading plus one line per band: "3 PK 1.52kHz Q2.17 -3.7dB off"
+void add_eq_lines(std::vector<std::string> &lines, const std::string &heading, const std::string &json,
+                  const char *gain_key) {
+  lines.push_back("#" + heading);
+  const auto types = json_list(json, "type");
+  if (types.empty()) {
+    lines.push_back("no data");
+    return;
+  }
+  const auto enabled = json_list(json, "enabled");
+  const auto frequency = json_list(json, "frequency");
+  const auto q = json_list(json, "q");
+  const auto gain = json_list(json, gain_key);
+  for (size_t i = 0; i < types.size(); i++) {
+    std::string line = std::to_string(i + 1) + " " + filter_type(types[i]);
+    if (i < frequency.size()) line += " " + frequency_text(frequency[i]);
+    if (i < q.size()) line += " Q" + number_text(q[i], "%.2f");
+    if (i < gain.size()) line += " " + number_text(gain[i], "%+.1f") + "dB";
+    if (i < enabled.size() && enabled[i] != "true") line += " off";
+    lines.push_back(line);
+  }
+}
+
+std::string or_dash(const std::string &value) { return value.empty() ? "--" : value; }
+
 }  // namespace
 
 void VolCtrl::enter_menu() {
@@ -57,6 +143,7 @@ void VolCtrl::exit_menu() {
   ESP_LOGI(TAG, "Exiting menu");
   in_menu_ = false;
   editor_.active = false;
+  page_.active = false;
   menu_stack_.clear();
   update_whole_screen();  // full redraw of the main screen
 }
@@ -185,6 +272,91 @@ void VolCtrl::send_to_speakers_(const std::string &json) {
       network::request_raw(entry.first, json);
 }
 
+std::vector<std::string> VolCtrl::build_page_lines_() {
+  std::vector<std::string> lines;
+  const network::Details d = network::get_details(page_.ipv6);
+  if (!d.loaded) {
+    lines.push_back("Loading...");
+    return lines;
+  }
+
+  if (page_.kind == PageKind::EQ) {
+    if (d.eq2.empty() && d.eq3.empty()) {
+      lines.push_back("Speaker did not answer");
+      return lines;
+    }
+    add_eq_lines(lines, "User EQ (eq2)", d.eq2, "gain");
+    add_eq_lines(lines, "Calibration EQ (eq3)", d.eq3, "boost");
+    return lines;
+  }
+
+  if (d.identity.empty() && d.audio.empty()) {
+    lines.push_back("Speaker did not answer");
+    return lines;
+  }
+  lines.push_back("#Device");
+  lines.push_back("Name: " + or_dash(json_value(d.identity, "name")));
+  lines.push_back("Model: " + or_dash(json_value(d.identity, "product")));
+  lines.push_back("Serial: " + or_dash(json_value(d.identity, "serial")));
+  lines.push_back("Firmware: " + or_dash(json_value(d.identity, "version")));
+  lines.push_back("Vendor: " + or_dash(json_value(d.identity, "vendor")));
+  lines.push_back("IPv6:");
+  const size_t half = page_.ipv6.size() / 2;
+  lines.push_back("  " + page_.ipv6.substr(0, half));
+  lines.push_back("  " + page_.ipv6.substr(half));
+  lines.push_back("#Audio");
+  lines.push_back("Input: " + or_dash(json_value(d.audio, "interface")));
+  lines.push_back("Level: " + or_dash(json_value(d.audio, "level")) + " dB");
+  lines.push_back("Mute: " + or_dash(json_value(d.audio, "mute")));
+  lines.push_back("Solo: " + or_dash(json_value(d.audio, "solo")));
+  lines.push_back("Delay: " + or_dash(json_value(d.audio, "delay")));
+  lines.push_back("Phase invert: " + or_dash(json_value(d.audio, "phaseinversion")));
+  const auto levels = json_list(d.mixer, "levels");
+  const auto inputs = json_list(d.mixer, "inputs");
+  for (size_t i = 0; i < levels.size(); i++) {
+    std::string name = i < inputs.size() ? inputs[i] : std::to_string(i + 1);
+    const size_t slash = name.rfind('/');
+    if (slash != std::string::npos) name = name.substr(slash + 1);
+    lines.push_back("Mixer " + name + ": " + number_text(levels[i], "%.1f") + " dB");
+  }
+  lines.push_back("#Standby");
+  lines.push_back("Auto standby: " + or_dash(json_value(d.standby, "enabled")));
+  lines.push_back("After: " + or_dash(json_value(d.standby, "auto_standby_time")) + " min");
+  lines.push_back("Wake level: " + or_dash(json_value(d.standby, "level")) + " dB");
+  lines.push_back("Logo brightness: " + or_dash(json_value(d.standby, "brightness")) + "%");
+  return lines;
+}
+
+void VolCtrl::open_page_(PageKind kind, const std::string &ipv6) {
+  page_.active = true;
+  page_.kind = kind;
+  page_.ipv6 = ipv6;
+  page_.first = 0;
+  page_.title = std::string(kind == PageKind::EQ ? "EQ " : "INFO ") + short_name(network::device_name(ipv6));
+  network::request_details(ipv6);
+  page_.lines = build_page_lines_();
+  redraw_page_();
+}
+
+void VolCtrl::close_page_() {
+  page_.active = false;
+  redraw_menu_();
+}
+
+void VolCtrl::redraw_page_() {
+  display::draw_text_page(this->tft_, page_.title, page_.lines, page_.first);
+}
+
+// The details arrive asynchronously: swap "Loading..." for the real lines once they are there
+void VolCtrl::refresh_page_() {
+  std::vector<std::string> lines = build_page_lines_();
+  if (lines == page_.lines)
+    return;
+  page_.lines = std::move(lines);
+  page_.first = std::min(page_.first, std::max(0, static_cast<int>(page_.lines.size()) - display::text_page_rows()));
+  redraw_page_();
+}
+
 std::vector<VolCtrl::MenuItem> VolCtrl::build_menu_(MenuId id, std::string &title) {
   std::vector<MenuItem> items;
   auto add = [&items](const std::string &label, const std::string &value, std::function<void()> on_select,
@@ -227,6 +399,8 @@ std::vector<VolCtrl::MenuItem> VolCtrl::build_menu_(MenuId id, std::string &titl
         submenu("Home Assistant", MenuId::QUICK_ACTIONS);
       submenu("Speakers", MenuId::SPEAKERS);
       submenu("Speaker params", MenuId::SPEAKER_PARAMS);
+      submenu("Param EQ", MenuId::EQ_SPEAKERS);
+      submenu("Speaker info", MenuId::INFO_SPEAKERS);
       submenu("Volume setup", MenuId::VOLUME_SETUP);
       submenu("Info", MenuId::INFO);
       add("Sleep now", "", [this]() { deep_sleep(); });
@@ -259,6 +433,19 @@ std::vector<VolCtrl::MenuItem> VolCtrl::build_menu_(MenuId id, std::string &titl
         if (state.is_up && state.muted)
           value = "muted";
         add(short_name(network::device_name(entry.first)), value, nullptr);
+      }
+      break;
+    }
+
+    case MenuId::EQ_SPEAKERS:
+    case MenuId::INFO_SPEAKERS: {
+      const bool eq = id == MenuId::EQ_SPEAKERS;
+      title = eq ? "PARAM EQ" : "SPEAKER INFO";
+      back();
+      for (auto &entry : network::get_device_states()) {
+        const std::string ipv6 = entry.first;
+        add(short_name(network::device_name(ipv6)), "",
+            [this, eq, ipv6]() { open_page_(eq ? PageKind::EQ : PageKind::INFO, ipv6); }, true);
       }
       break;
     }

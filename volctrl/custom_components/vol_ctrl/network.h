@@ -49,6 +49,16 @@ namespace esphome
             // Queue any other SSC write (e.g. {"ui":{"logo":{"brightness":50}}}); sent in order, after volume / mute
             void request_raw(const std::string &ipv6, const std::string &command);
 
+            // Slow-changing speaker details (identity, audio settings, EQ), fetched on request for the info pages.
+            // Each member is the raw JSON reply of one query ("" when it failed).
+            struct Details
+            {
+                bool loaded = false; // the worker finished (also when everything failed)
+                std::string identity, standby, audio, mixer, eq2, eq3;
+            };
+            void request_details(const std::string &ipv6);
+            Details get_details(const std::string &ipv6);
+
             // Name the speaker was registered with ("Left-6473470117"), or the address if unknown
             std::string device_name(const std::string &ipv6);
 

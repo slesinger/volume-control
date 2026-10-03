@@ -45,7 +45,7 @@ struct SocketGuard {
 
 constexpr uint32_t CONNECT_TIMEOUT_MS = 300;
 constexpr uint32_t IO_TIMEOUT_MS = 500;
-constexpr size_t MAX_RESPONSE_BYTES = 2048;
+constexpr size_t MAX_RESPONSE_BYTES = 4096;  // the 20-band calibration EQ reply is about 1.8 kB
 
 // lwIP's connect() cannot be bounded with SO_SNDTIMEO, so connect non-blocking and wait in select().
 bool connect_with_timeout(int sock, const sockaddr *addr, socklen_t len, uint32_t timeout_ms) {
@@ -166,6 +166,7 @@ struct Link {
   uint8_t failed_polls = 0;   // consecutive, drives the back-off
   bool was_up = false;
   std::vector<std::string> pending_raw;  // other writes (speaker parameters), sent in order
+  bool details_wanted = false;
 };
 
 constexpr uint32_t POLL_INTERVAL_UP_MS = 1500;
@@ -176,6 +177,7 @@ constexpr uint32_t QUIET_AFTER_WRITE_MS = 400;    // let the speaker settle befo
 
 std::vector<Link> links;  // filled before start(), never resized afterwards
 std::vector<PollUpdate> updates;
+std::map<std::string, Details> details;  // guarded by mtx
 std::mutex mtx;
 TaskHandle_t worker = nullptr;
 std::atomic<bool> online{false};
@@ -284,6 +286,37 @@ void worker_task(void *) {
       }
     }
 
+    // 1b) Detail pages: a few slow queries for the speaker the user is looking at
+    for (auto &l : links) {
+      {
+        std::lock_guard<std::mutex> lock(mtx);
+        if (!l.details_wanted) continue;
+        l.details_wanted = false;
+      }
+      static const char *const queries[6] = {
+          "{\"device\":{\"name\":null,\"identity\":{\"vendor\":null,\"product\":null,\"serial\":null,\"version\":null}}}",
+          "{\"device\":{\"standby\":{\"enabled\":null,\"auto_standby_time\":null,\"level\":null}},\"ui\":{\"logo\":{\"brightness\":null}}}",
+          "{\"audio\":{\"in\":{\"interface\":null},\"out\":{\"level\":null,\"mute\":null,\"solo\":null,\"delay\":null,\"phaseinversion\":null}}}",
+          "{\"audio\":{\"out\":{\"mixer\":{\"levels\":null,\"inputs\":null}}}}",
+          "{\"audio\":{\"out\":{\"eq2\":{\"enabled\":null,\"type\":null,\"frequency\":null,\"q\":null,\"gain\":null}}}}",
+          "{\"audio\":{\"out\":{\"eq3\":{\"enabled\":null,\"type\":null,\"frequency\":null,\"q\":null,\"gain\":null,\"boost\":null}}}}"};
+      std::string replies[6];
+      for (int i = 0; i < 6; i++) {
+        if (!send_ssc_command(l.ipv6, queries[i], replies[i])) replies[i].clear();
+      }
+      Details d;
+      d.loaded = true;
+      d.identity = replies[0];
+      d.standby = replies[1];
+      d.audio = replies[2];
+      d.mixer = replies[3];
+      d.eq2 = replies[4];
+      d.eq3 = replies[5];
+      std::lock_guard<std::mutex> lock(mtx);
+      details[l.ipv6] = d;
+      l.next_poll_ms = millis();
+    }
+
     // 2) At most one poll per iteration, so writes queued meanwhile wait for one poll only
     for (auto &l : links) {
       uint32_t now = millis();
@@ -377,6 +410,23 @@ void request_raw(const std::string &ipv6, const std::string &command) {
     l->write_epoch++;
   }
   if (worker != nullptr) xTaskNotifyGive(worker);
+}
+
+void request_details(const std::string &ipv6) {
+  Link *l = find_link(ipv6);
+  if (l == nullptr) return;
+  {
+    std::lock_guard<std::mutex> lock(mtx);
+    details[ipv6] = Details();  // "loading"
+    l->details_wanted = true;
+  }
+  if (worker != nullptr) xTaskNotifyGive(worker);
+}
+
+Details get_details(const std::string &ipv6) {
+  std::lock_guard<std::mutex> lock(mtx);
+  auto it = details.find(ipv6);
+  return it == details.end() ? Details() : it->second;
 }
 
 std::string device_name(const std::string &ipv6) {

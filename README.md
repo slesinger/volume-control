@@ -190,7 +190,7 @@ Extra push buttons (to GND, internal pull-ups): A -> GPIO32, B -> GPIO33, C -> G
   they fire `esphome.volume_control_action` events), Speakers (online state, volume), Speaker params (logo brightness,
   auto standby on/off and time, applied to all speakers), Volume setup (max volume, step, backlight, screen-off timeout,
   deep sleep timeout; saved in NVS), Info (WiFi, IP, uptime, heap, build), Sleep now, Restart.
-- Parametric EQ, speaker delay and device discovery are not implemented.
+- Menu "Param EQ" lists the 10 user bands (`eq2`) and the 20 calibration bands (`eq3`) set in each speaker, read-only; "Speaker info" lists identity, audio and standby settings. Editing EQ, speaker delay and device discovery are not implemented.
 - The encoder is decoded by the component itself (debounced quarter-step state machine), not by ESPHome's rotary_encoder.
 
 ## WiiM streamer (optional)
