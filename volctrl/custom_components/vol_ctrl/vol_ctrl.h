@@ -116,6 +116,7 @@ class VolCtrl : public Component, public spi::SPIDevice<spi::BIT_ORDER_MSB_FIRST
 
   // UI state tracking
   uint32_t last_draw_{0};
+    uint32_t last_art_version_{0};
   PollResult pending_changes_;  // changes folded in since the last redraw
   bool wifi_shown_{false};  // for detecting changes that deserve an immediate redraw
   display::LinkState wiim_shown_{display::LinkState::PENDING};

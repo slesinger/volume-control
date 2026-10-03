@@ -1,4 +1,5 @@
 #include "wiim.h"
+#include "art.h"
 #include "esphome/core/log.h"
 #include "esphome/core/hal.h"
 #include <Arduino.h>
@@ -171,11 +172,13 @@ bool poll(const std::string &host) {
     json_string(body, "title", next.title);
     json_string(body, "artist", next.artist);
     json_string(body, "album", next.album);
+    json_string(body, "albumArtURI", next.art_url);
     if (next.title == "unknow") next.title.clear();
     if (next.artist == "unknow") next.artist.clear();
     if (next.album == "unknow") next.album.clear();
   }
 
+  art::request(next.playing ? next.art_url : std::string());
   std::lock_guard<std::mutex> lock(mtx);
   status = next;
   return true;

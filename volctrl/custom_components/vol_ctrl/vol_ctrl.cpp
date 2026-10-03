@@ -1,4 +1,5 @@
 #include "vol_ctrl.h"
+#include "art.h"
 #include "esphome/core/log.h"
 #include <TFT_eSPI.h>
 #include "esphome/components/wifi/wifi_component.h"
@@ -289,6 +290,14 @@ namespace esphome
       if (!got_data && now - last_draw_ <= 1500)
         return;
       last_draw_ = now;
+      // New album art (or none any more) changes the background of everything: repaint the whole screen
+      const uint32_t art_version = art::version();
+      if (art_version != last_art_version_ && !in_menu_ && !display_off_)
+      {
+        last_art_version_ = art_version;
+        update_whole_screen();
+        return;
+      }
       draw_status_(pending_changes_, force_redraw_);
       pending_changes_ = PollResult{};
       force_redraw_ = false;

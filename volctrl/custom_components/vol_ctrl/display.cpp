@@ -1,5 +1,6 @@
 // ...existing code...
 #include "display.h"
+#include "art.h"
 #include "device_state.h"
 #include <TFT_eSPI.h>
 #include <algorithm>
@@ -44,7 +45,7 @@ static void build_tile() {
     for (int x = 0; x < TILE; x++) {
       float n = 0.6f * value_noise(x, y, 4, 1) + 0.3f * value_noise(x, y, 8, 2);
       float grain = (hash2(x, y, 3) & 0xFF) / 255.0f;
-      int v = 14 + static_cast<int>(n * 22 + grain * 6);  // about 14..42 of 255: dark enough for white text
+      int v = 34 + static_cast<int>(n * 34 + grain * 8);  // about 34..76 of 255: still dark enough for white text
       int r = v + 2, g = v + 1, b = v;
       tile[y * TILE + x] = static_cast<uint16_t>(((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3));
     }
@@ -61,9 +62,14 @@ static void fill_bg(TFT_eSPI *tft, int x, int y, int w, int h) {
   if (w <= 0 || h <= 0) return;
   static uint16_t buf[240 * 8];
   tft->setSwapBytes(true);
+  const bool album = art::ready();
   for (int row = 0; row < h; row += 8) {
     const int rows = std::min(8, h - row);
     for (int r = 0; r < rows; r++) {
+      if (album) {
+        art::row(y + row + r, x, w, &buf[r * w]);
+        continue;
+      }
       const uint16_t *src = &tile[((y + row + r) % TILE) * TILE];
       uint16_t *dst = &buf[r * w];
       for (int i = 0; i < w; i++) dst[i] = src[(x + i) % TILE];
@@ -117,7 +123,7 @@ ScreenRegion get_standby_time_region() {
 
 // The wifi icon and the speaker blocks are as high as the digits of the standby time next to them
 const int ICON_TOP = 3;
-const int ICON_HEIGHT = 16;
+const int ICON_HEIGHT = 17;
 
 ScreenRegion get_wifi_region() {
   return {52, ICON_TOP, 48, ICON_HEIGHT};

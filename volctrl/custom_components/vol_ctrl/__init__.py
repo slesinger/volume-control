@@ -67,4 +67,7 @@ async def to_code(config):
         cg.add(var.set_backlight_pin(backlight))
 
     cg.add_library("Bodmer/TFT_eSPI", "^2.5.0")
+    cg.add_library("Bodmer/TJpg_Decoder", "^1.1.0")
+    for lib in ("FS", "SPIFFS", "LittleFS", "SD", "SPI"):  # TJpg_Decoder includes them unconditionally on ESP32
+        cg.add_library(lib, None)
     var.add_include("TFT_eSPI.h")

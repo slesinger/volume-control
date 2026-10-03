@@ -6,6 +6,7 @@ substitutions:
 esphome:
   name: volume-control
   platformio_options:
+    lib_ldf_mode: chain+
     build_flags:
       - -DUSER_SETUP_LOADED=1
       - -DST7789_DRIVER=1
